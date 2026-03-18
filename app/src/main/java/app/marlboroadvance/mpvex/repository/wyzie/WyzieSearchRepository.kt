@@ -6,7 +6,6 @@ import android.util.Log
 import androidx.documentfile.provider.DocumentFile
 import app.marlboroadvance.mpvex.preferences.SubtitlesPreferences
 import app.marlboroadvance.mpvex.utils.media.ChecksumUtils
-import app.marlboroadvance.mpvex.utils.media.MediaInfoParser
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
@@ -14,11 +13,11 @@ import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
 import okhttp3.OkHttpClient
 import okhttp3.Request
-import okhttp3.Response
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
 import java.net.URLEncoder
+import java.nio.charset.StandardCharsets
 
 @Serializable
 data class WyzieSubtitle(
@@ -197,7 +196,7 @@ object WyzieLanguages {
         "tg" to "Tajik", "tt" to "Tatar", "uz" to "Uzbek", "yi" to "Yiddish",
         "yo" to "Yoruba", "zu" to "Zulu"
     )
-    val SORTED = ALL.toList().sortedBy { it.second }.toMap()
+    val SORTED = ALL.entries.sortedBy { it.value }.associate { it.key to it.value }
 }
 
 class WyzieSearchRepository(
@@ -210,16 +209,17 @@ class WyzieSearchRepository(
 
     suspend fun search(
         query: String,
+        mediaId: String? = null,
         season: Int? = null,
         episode: Int? = null,
         year: String? = null
     ): Result<List<WyzieSubtitle>> = withContext(Dispatchers.IO) {
         try {
-            var searchId = query
-            if (!query.startsWith("tt", ignoreCase = true) && !query.all { it.isDigit() }) {
+            var searchId = mediaId ?: query
+            
+            if (mediaId == null && !query.startsWith("tt", ignoreCase = true) && !query.all { it.isDigit() }) {
                 val tmdbResults = tmdbSearch(query)
                 if (tmdbResults.isNotEmpty()) {
-                    // If year is provided, prefer match with matching release year
                     val result = if (year != null) {
                         tmdbResults.firstOrNull { it.releaseYear == year }
                             ?: tmdbResults.firstOrNull { it.releaseYear?.startsWith(year.take(3)) == true }
@@ -228,7 +228,7 @@ class WyzieSearchRepository(
                         tmdbResults[0]
                     }
                     searchId = result.id.toString()
-                } else {
+                } else if (season == null && episode == null) {
                     return@withContext Result.failure(Exception("Could not find media ID for '$query'"))
                 }
             }
@@ -260,17 +260,13 @@ class WyzieSearchRepository(
                 hi = if (hearingImpaired) true else null
             )
             
-            // The Wyzie API often returns all languages regardless of query parameters.
-            // We must strictly filter the results locally based on selected languages.
-            val filteredResults = if (languages != null && languages != "all") {
-                val allowedLangs = languages.split(",").map { it.trim() }
+            val filteredResults = if (!languages.isNullOrEmpty() && languages != "all") {
+                val allowedLangs = languages.split(",").map { it.trim() }.toSet()
                 results.filter { sub -> 
-                    // Map the subtitle language code (which is sometimes lowercase, sometimes not)
-                    val subLangCode = WyzieLanguages.ALL.entries.find { 
-                        it.value.equals(sub.language, ignoreCase = true) 
-                    }?.key ?: sub.language?.lowercase()
-                    
-                    allowedLangs.contains(subLangCode)
+                    val subLang = sub.language?.lowercase() ?: return@filter true
+                    allowedLangs.contains(subLang) || WyzieLanguages.ALL.any { (code, name) -> 
+                        code in allowedLangs && name.equals(subLang, ignoreCase = true)
+                    }
                 }
             } else {
                 results
@@ -304,36 +300,31 @@ class WyzieSearchRepository(
         source: String = "all",
         hi: Boolean? = null
     ): List<WyzieSubtitle> {
-        fun encode(s: String) = URLEncoder.encode(s, "UTF-8")
+        val utf8 = StandardCharsets.UTF_8.name()
+        fun encode(s: String) = URLEncoder.encode(s, utf8)
         
-        val url = StringBuilder("$baseUrl/search?id=${encode(id)}")
-            .apply {
-                if (season != null && episode != null) {
-                    append("&season=$season")
-                    append("&episode=$episode")
-                }
-                
-                // Wyzie API language format: single or multiple language codes are comma separated: `language=en,es`
-                language?.filter { !it.isWhitespace() }?.let { append("&language=${encode(it)}") }
-                
-                // Format and Encoding parameters
-                format?.split(",")?.filter { it.isNotBlank() }?.forEach { append("&${encode(it.trim())}=true") }
-                encoding?.split(",")?.filter { it.isNotBlank() }?.forEach { append("&${encode(it.trim())}=true") }
-                
-                // Source is a special case, "all" defaults to all sources implicitly, but adding specific sources works like `opensubtitles=true`
-                if (source != "all") {
-                   source.split(",").filter { it.isNotBlank() }.forEach { append("&${encode(it.trim())}=true") }
-                }
+        val url = StringBuilder("$baseUrl/search?id=${encode(id)}").apply {
+            if (season != null && episode != null) {
+                append("&season=$season&episode=$episode")
+            }
+            
+            language?.filter { !it.isWhitespace() }?.let { append("&language=${encode(it)}") }
+            
+            format?.split(",")?.filter { it.isNotBlank() }?.forEach { append("&${encode(it.trim())}=true") }
+            encoding?.split(",")?.filter { it.isNotBlank() }?.forEach { append("&${encode(it.trim())}=true") }
+            
+            if (source != "all") {
+               source.split(",").filter { it.isNotBlank() }.forEach { append("&${encode(it.trim())}=true") }
+            }
 
-                append("&unzip=true")
-                hi?.let { append("&hi=$it") }
-            }.toString()
+            append("&unzip=true")
+            hi?.let { append("&hi=$it") }
+        }.toString()
 
         val request = Request.Builder().url(url).build()
         client.newCall(request).execute().use { response ->
             val responseBodyString = response.body?.string() ?: ""
             if (!response.isSuccessful) {
-                // Wyzie API returns 400 when no subtitles are found for valid parameters
                 if (response.code == 400 && responseBodyString.contains("No subtitles found", ignoreCase = true)) {
                     return emptyList()
                 }
@@ -364,7 +355,6 @@ class WyzieSearchRepository(
             val extension = subtitle.format?.lowercase() ?: urlExtension.takeIf { it.isNotEmpty() } ?: "srt"
             
             val saveFolderUri = preferences.subtitleSaveFolder.get()
-            // Use CRC32 checksum of mediaTitle for the folder name
             val folderName = ChecksumUtils.getCRC32(mediaTitle)
             val fullTitle = mediaTitle.substringBeforeLast(".")
             val langCode = subtitle.language ?: "en"
@@ -373,9 +363,8 @@ class WyzieSearchRepository(
             if (saveFolderUri.isNotBlank()) {
                 val parentDir = DocumentFile.fromTreeUri(context, Uri.parse(saveFolderUri))
                 if (parentDir?.exists() == true) {
-                    var movieDir = parentDir.findFile(folderName) ?: parentDir.createDirectory(folderName)
+                    val movieDir = parentDir.findFile(folderName) ?: parentDir.createDirectory(folderName)
                     if (movieDir != null) {
-                        // Check for existing file or create new one
                         val subFile = movieDir.findFile(subFileName) ?: movieDir.createFile("application/octet-stream", subFileName)
                         if (subFile != null) {
                             context.contentResolver.openOutputStream(subFile.uri)?.use { it.write(bytes) }
@@ -436,7 +425,8 @@ class WyzieSearchRepository(
     }
 
     private fun tmdbSearch(query: String): List<WyzieTmdbResult> {
-        val url = "$baseUrl/api/tmdb/search?q=${URLEncoder.encode(query, "UTF-8")}"
+        val utf8 = StandardCharsets.UTF_8.name()
+        val url = "$baseUrl/api/tmdb/search?q=${URLEncoder.encode(query, utf8)}"
         val request = Request.Builder().url(url).build()
         client.newCall(request).execute().use { response ->
             if (!response.isSuccessful) throw IOException("TMDb search failed: ${response.code}")

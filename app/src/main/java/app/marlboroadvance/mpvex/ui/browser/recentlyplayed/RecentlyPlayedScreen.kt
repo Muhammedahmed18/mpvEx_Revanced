@@ -4,6 +4,8 @@ import android.content.Intent
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.PaddingValues
@@ -13,9 +15,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
-import androidx.compose.foundation.lazy.grid.GridCells
-import androidx.compose.foundation.lazy.grid.LazyGridState
-import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.PlaylistPlay
 import androidx.compose.material.icons.filled.Close
@@ -63,7 +62,6 @@ import app.marlboroadvance.mpvex.domain.thumbnail.ThumbnailRepository
 import app.marlboroadvance.mpvex.preferences.AdvancedPreferences
 import app.marlboroadvance.mpvex.preferences.BrowserPreferences
 import app.marlboroadvance.mpvex.preferences.GesturePreferences
-import app.marlboroadvance.mpvex.preferences.MediaLayoutMode
 import app.marlboroadvance.mpvex.preferences.preference.collectAsState
 import app.marlboroadvance.mpvex.presentation.Screen
 import app.marlboroadvance.mpvex.presentation.components.ConfirmDialog
@@ -75,18 +73,21 @@ import app.marlboroadvance.mpvex.ui.browser.playlist.PlaylistDetailScreen
 import app.marlboroadvance.mpvex.ui.browser.selection.rememberSelectionManager
 import app.marlboroadvance.mpvex.ui.browser.sheets.PlayLinkSheet
 import app.marlboroadvance.mpvex.ui.browser.states.EmptyState
+import app.marlboroadvance.mpvex.ui.browser.states.PermissionDeniedState
 import app.marlboroadvance.mpvex.ui.utils.LocalBackStack
 import app.marlboroadvance.mpvex.utils.media.MediaUtils
+import app.marlboroadvance.mpvex.utils.permission.PermissionUtils
+import com.google.accompanist.permissions.ExperimentalPermissionsApi
+import com.google.accompanist.permissions.PermissionStatus
 import kotlinx.coroutines.launch
 import kotlinx.serialization.Serializable
 import my.nanihadesuka.compose.LazyColumnScrollbar
-import my.nanihadesuka.compose.LazyVerticalGridScrollbar
 import my.nanihadesuka.compose.ScrollbarSettings
 import org.koin.compose.koinInject
 
 @Serializable
 object RecentlyPlayedScreen : Screen {
-  @OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
+  @OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class, ExperimentalPermissionsApi::class)
   @Composable
   override fun Content() {
     val context = LocalContext.current
@@ -96,7 +97,6 @@ object RecentlyPlayedScreen : Screen {
       viewModel(factory = RecentlyPlayedViewModel.factory(context.applicationContext as android.app.Application))
 
     val recentItems by viewModel.recentItems.collectAsState()
-    val recentVideos by viewModel.recentVideos.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
     val deleteDialogOpen = rememberSaveable { mutableStateOf(false) }
     val deleteFilesCheckbox = rememberSaveable { mutableStateOf(false) }
@@ -104,14 +104,16 @@ object RecentlyPlayedScreen : Screen {
     val enableRecentlyPlayed by advancedPreferences.enableRecentlyPlayed.collectAsState()
     val navigationBarHeight = app.marlboroadvance.mpvex.ui.browser.LocalNavigationBarHeight.current
 
-    // FAB visibility for scroll-based hiding
+    val permissionState = PermissionUtils.handleStoragePermission(
+      onPermissionGranted = { /* viewModel.refresh() not available, data flow is automatic */ }
+    )
+
     val isFabVisible = remember { mutableStateOf(true) }
     val isFabExpanded = remember { mutableStateOf(false) }
     val showLinkDialog = remember { mutableStateOf(false) }
     
     val coroutineScope = rememberCoroutineScope()
     
-    // Selection manager for all items (videos and playlists)
     val selectionManager =
       rememberSelectionManager(
         items = recentItems,
@@ -128,14 +130,12 @@ object RecentlyPlayedScreen : Screen {
           var successCount = 0
           var failCount = 0
 
-          // Delete videos from history
           if (videos.isNotEmpty()) {
             val (videoSuccess, videoFail) = viewModel.deleteVideosFromHistory(videos, deleteFiles)
             successCount += videoSuccess
             failCount += videoFail
           }
 
-          // Delete playlist items from history
           if (playlistIds.isNotEmpty()) {
             val (playlistSuccess, playlistFail) = viewModel.deletePlaylistsFromHistory(playlistIds)
             successCount += playlistSuccess
@@ -144,11 +144,10 @@ object RecentlyPlayedScreen : Screen {
 
           Pair(successCount, failCount)
         },
-        onRenameItem = null, // Cannot rename from history screen
+        onRenameItem = null,
         onOperationComplete = { },
       )
 
-    // Handle back button during selection mode or FAB menu expanded
     BackHandler(enabled = selectionManager.isInSelectionMode || isFabExpanded.value) {
       when {
         isFabExpanded.value -> isFabExpanded.value = false
@@ -156,7 +155,6 @@ object RecentlyPlayedScreen : Screen {
       }
     }
     
-    // File picker for opening external files
     val filePicker = rememberLauncherForActivityResult(
       contract = ActivityResultContracts.OpenDocument(),
     ) { uri ->
@@ -171,14 +169,11 @@ object RecentlyPlayedScreen : Screen {
       }
     }
 
-    // Track scroll for FAB visibility - create states here to pass to content
     val listState = remember { LazyListState() }
-    val gridState = remember { LazyGridState() }
-    val browserPreferences = koinInject<BrowserPreferences>()
-    val mediaLayoutMode by browserPreferences.mediaLayoutMode.collectAsState()
+    
     app.marlboroadvance.mpvex.ui.browser.fab.FabScrollHelper.trackScrollForFabVisibility(
       listState = listState,
-      gridState = if (mediaLayoutMode == MediaLayoutMode.GRID) gridState else null,
+      gridState = null,
       isFabVisible = isFabVisible,
       expanded = isFabExpanded.value,
       onExpandedChange = { isFabExpanded.value = it },
@@ -191,14 +186,14 @@ object RecentlyPlayedScreen : Screen {
             isInSelectionMode = selectionManager.isInSelectionMode,
             selectedCount = selectionManager.selectedCount,
             totalCount = recentItems.size,
-            onBackClick = null, // No back button for recently played screen
+            onBackClick = null,
             onCancelSelection = { selectionManager.clear() },
-            onSortClick = null, // No sorting in recently played
+            onSortClick = null,
             onSettingsClick = {
               backStack.add(app.marlboroadvance.mpvex.ui.preferences.PreferencesScreen)
             },
             isSingleSelection = selectionManager.isSingleSelection,
-            onInfoClick = null, // No info in recently played
+            onInfoClick = null,
             onShareClick = null,
             onPlayClick = null,
             onSelectAll = { selectionManager.selectAll() },
@@ -227,7 +222,7 @@ object RecentlyPlayedScreen : Screen {
               ToggleFloatingActionButton(
                 modifier = Modifier
                   .animateFloatingActionButton(
-                    visible = !selectionManager.isInSelectionMode && isFabVisible.value,
+                    visible = !selectionManager.isInSelectionMode && isFabVisible.value && permissionState.status is PermissionStatus.Granted,
                     alignment = Alignment.BottomEnd,
                   ),
                 checked = isFabExpanded.value,
@@ -282,76 +277,80 @@ object RecentlyPlayedScreen : Screen {
         }
       },
     ) { padding ->
-      when {
-        !enableRecentlyPlayed -> {
-          Box(
-            modifier = Modifier
-              .fillMaxSize()
-              .padding(padding),
-            contentAlignment = Alignment.Center,
-          ) {
-            EmptyState(
-              icon = Icons.Filled.History,
-              title = "Recently Played is disabled",
-              message = "Enable it in Advanced Settings to track your playback history",
-            )
+      when (permissionState.status) {
+        is PermissionStatus.Granted -> {
+          when {
+            !enableRecentlyPlayed -> {
+              Box(
+                modifier = Modifier
+                  .fillMaxSize()
+                  .padding(padding),
+                contentAlignment = Alignment.Center,
+              ) {
+                EmptyState(
+                  icon = Icons.Filled.History,
+                  title = "Recently Played is disabled",
+                  message = "Enable it in Advanced Settings to track your playback history",
+                )
+              }
+            }
+
+            isLoading && recentItems.isEmpty() -> {
+              Box(
+                modifier = Modifier
+                  .fillMaxSize()
+                  .padding(padding),
+                contentAlignment = Alignment.Center,
+              ) {
+                CircularProgressIndicator(
+                  modifier = Modifier.size(48.dp),
+                  color = MaterialTheme.colorScheme.primary,
+                )
+              }
+            }
+
+            recentItems.isEmpty() && !isLoading -> {
+              Box(
+                modifier = Modifier
+                  .fillMaxSize()
+                  .padding(padding),
+                contentAlignment = Alignment.Center,
+              ) {
+                EmptyState(
+                  icon = Icons.Filled.History,
+                  title = "No recently played videos",
+                  message = "Videos you play will appear here",
+                )
+              }
+            }
+
+            else -> {
+              RecentItemsContent(
+                recentItems = recentItems,
+                playlistRepository = playlistRepository,
+                selectionManager = selectionManager,
+                onVideoClick = { video ->
+                  MediaUtils.playFile(video, context, "recently_played")
+                },
+                onPlaylistClick = { playlistItem ->
+                  backStack.add(PlaylistDetailScreen(playlistItem.playlist.id))
+                },
+                modifier = Modifier.padding(padding),
+                isInSelectionMode = selectionManager.isInSelectionMode,
+                listState = listState,
+              )
+            }
           }
         }
-
-        isLoading && recentItems.isEmpty() -> {
-          Box(
-            modifier = Modifier
-              .fillMaxSize()
-              .padding(padding),
-            contentAlignment = Alignment.Center,
-          ) {
-            CircularProgressIndicator(
-              modifier = Modifier.size(48.dp),
-              color = MaterialTheme.colorScheme.primary,
-            )
-          }
-        }
-
-        recentItems.isEmpty() && !isLoading -> {
-          Box(
-            modifier = Modifier
-              .fillMaxSize()
-              .padding(padding),
-            contentAlignment = Alignment.Center,
-          ) {
-            EmptyState(
-              icon = Icons.Filled.History,
-              title = "No recently played videos",
-              message = "Videos you play will appear here",
-            )
-          }
-        }
-
-        else -> {
-          RecentItemsContent(
-            recentItems = recentItems,
-            playlistRepository = playlistRepository,
-            selectionManager = selectionManager,
-            onVideoClick = { video ->
-              // Always play individual videos without creating a playlist
-              // regardless of playlist mode setting
-              MediaUtils.playFile(video, context, "recently_played")
-            },
-            onPlaylistClick = { playlistItem ->
-              // Navigate to playlist detail screen
-              backStack.add(PlaylistDetailScreen(playlistItem.playlist.id))
-            },
+        is PermissionStatus.Denied -> {
+          PermissionDeniedState(
+            onRequestPermission = { permissionState.launchPermissionRequest() },
             modifier = Modifier.padding(padding),
-            isInSelectionMode = selectionManager.isInSelectionMode,
-            listState = listState,
-            gridState = gridState,
           )
         }
       }
 
-      // Delete confirmation dialog
       if (deleteDialogOpen.value && selectionManager.isInSelectionMode) {
-        // Remove selected items from history
         val itemCount = selectionManager.selectedCount
         val itemText = if (itemCount == 1) "item" else "items"
         val deleteFiles = deleteFilesCheckbox.value
@@ -405,7 +404,6 @@ object RecentlyPlayedScreen : Screen {
         )
       }
       
-      // Link dialog
       PlayLinkSheet(
         isOpen = showLinkDialog.value,
         onDismiss = { showLinkDialog.value = false },
@@ -425,7 +423,6 @@ private fun RecentItemsContent(
   modifier: Modifier = Modifier,
   isInSelectionMode: Boolean = false,
   listState: LazyListState,
-  gridState: LazyGridState,
 ) {
   val gesturePreferences = koinInject<GesturePreferences>()
   val browserPreferences = koinInject<app.marlboroadvance.mpvex.preferences.BrowserPreferences>()
@@ -434,28 +431,11 @@ private fun RecentItemsContent(
   val tapThumbnailToSelect by gesturePreferences.tapThumbnailToSelect.collectAsState()
   val showSubtitleIndicator by browserPreferences.showSubtitleIndicator.collectAsState()
   val showVideoThumbnails by browserPreferences.showVideoThumbnails.collectAsState()
-  val mediaLayoutMode by browserPreferences.mediaLayoutMode.collectAsState()
-  val folderGridColumnsPortrait by browserPreferences.folderGridColumnsPortrait.collectAsState()
-  val folderGridColumnsLandscape by browserPreferences.folderGridColumnsLandscape.collectAsState()
-  val videoGridColumnsPortrait by browserPreferences.videoGridColumnsPortrait.collectAsState()
-  val videoGridColumnsLandscape by browserPreferences.videoGridColumnsLandscape.collectAsState()
-
-  val configuration = androidx.compose.ui.platform.LocalConfiguration.current
-  val isLandscape = configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
-
-  val folderGridColumns = if (isLandscape) folderGridColumnsLandscape else folderGridColumnsPortrait
-  val videoGridColumns = if (isLandscape) videoGridColumnsLandscape else videoGridColumnsPortrait
-
-  val isGridMode = mediaLayoutMode == MediaLayoutMode.GRID
 
   val coroutineScope = rememberCoroutineScope()
   val isRefreshing = remember { mutableStateOf(false) }
 
-  val thumbWidthDp = if (isGridMode) {
-    (360.dp / videoGridColumns)
-  } else {
-    160.dp
-  }
+  val thumbWidthDp = 160.dp
   val aspect = 16f / 9f
   val thumbWidthPx = with(density) { thumbWidthDp.roundToPx() }
   val thumbHeightPx = (thumbWidthPx / aspect).toInt()
@@ -477,19 +457,15 @@ private fun RecentItemsContent(
 
   val isAtTop by remember {
     derivedStateOf {
-      if (isGridMode) {
-        gridState.firstVisibleItemIndex == 0 && gridState.firstVisibleItemScrollOffset == 0
-      } else {
-        listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset == 0
-      }
+      listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset == 0
     }
   }
 
   val hasEnoughItems = recentItems.size > 20
 
-  val scrollbarAlpha by androidx.compose.animation.core.animateFloatAsState(
+  val scrollbarAlpha by animateFloatAsState(
     targetValue = if (!hasEnoughItems) 0f else 1f,
-    animationSpec = androidx.compose.animation.core.tween(durationMillis = 200),
+    animationSpec = tween(durationMillis = 200),
     label = "scrollbarAlpha",
   )
 
@@ -499,196 +475,95 @@ private fun RecentItemsContent(
     listState = listState,
     modifier = modifier.fillMaxSize(),
   ) {
-    if (isGridMode) {
-      val navigationBarHeight = app.marlboroadvance.mpvex.ui.browser.LocalNavigationBarHeight.current
-      Box(
-        modifier = Modifier
-          .fillMaxSize()
-          .padding(bottom = navigationBarHeight)
+    val navigationBarHeight = app.marlboroadvance.mpvex.ui.browser.LocalNavigationBarHeight.current
+    Box(
+      modifier = Modifier
+        .fillMaxSize()
+        .padding(bottom = navigationBarHeight)
+    ) {
+      LazyColumnScrollbar(
+        state = listState,
+        settings = ScrollbarSettings(
+          thumbUnselectedColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.4f * scrollbarAlpha),
+          thumbSelectedColor = MaterialTheme.colorScheme.primary.copy(alpha = scrollbarAlpha),
+        ),
       ) {
-        LazyVerticalGridScrollbar(
-          state = gridState,
-          settings = ScrollbarSettings(
-            thumbUnselectedColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.4f * scrollbarAlpha),
-            thumbSelectedColor = MaterialTheme.colorScheme.primary.copy(alpha = scrollbarAlpha),
-          ),
-        ) {
-          LazyVerticalGrid(
-            columns = GridCells.Fixed(videoGridColumns),
-            state = gridState,
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(
-              start = 8.dp,
-              end = 8.dp,
-              bottom = if (isInSelectionMode) 88.dp else 16.dp
-            ),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-          ) {
-            items(
-              count = recentItems.size,
-              key = { index ->
-                when (val item = recentItems[index]) {
-                  is RecentlyPlayedItem.VideoItem -> "video_${item.video.id}_${item.timestamp}"
-                  is RecentlyPlayedItem.PlaylistItem -> "playlist_${item.playlist.id}_${item.timestamp}"
-                }
-              },
-            ) { index ->
-              when (val item = recentItems[index]) {
-                is RecentlyPlayedItem.VideoItem -> {
-                  VideoCard(
-                    video = item.video,
-                    progressPercentage = null,
-                    isSelected = selectionManager.isSelected(item),
-                    onClick = {
-                      if (selectionManager.isInSelectionMode) {
-                        selectionManager.toggle(item)
-                      } else {
-                        onVideoClick(item.video)
-                      }
-                    },
-                    onLongClick = { selectionManager.toggle(item) },
-                    onThumbClick = if (tapThumbnailToSelect) {
-                      { selectionManager.toggle(item) }
-                    } else {
-                      {
-                        if (selectionManager.isInSelectionMode) {
-                          selectionManager.toggle(item)
-                        } else {
-                          onVideoClick(item.video)
-                        }
-                      }
-                    },
-                    isGridMode = true,
-                    gridColumns = videoGridColumns,
-                    showSubtitleIndicator = showSubtitleIndicator,
-                  )
-                }
-
-                is RecentlyPlayedItem.PlaylistItem -> {
-                  val folderModel = VideoFolder(
-                    bucketId = item.playlist.id.toString(),
-                    name = item.playlist.name,
-                    path = "",
-                    videoCount = item.videoCount,
-                    totalSize = 0,
-                    totalDuration = 0,
-                    lastModified = item.playlist.updatedAt / 1000,
-                  )
-                  FolderCard(
-                    folder = folderModel,
-                    isSelected = selectionManager.isSelected(item),
-                    isRecentlyPlayed = false,
-                    onClick = {
-                      if (selectionManager.isInSelectionMode) {
-                        selectionManager.toggle(item)
-                      } else {
-                        coroutineScope.launch {
-                          onPlaylistClick(item)
-                        }
-                      }
-                    },
-                    onLongClick = { selectionManager.toggle(item) },
-                    onThumbClick = {
-                      if (tapThumbnailToSelect) {
-                        selectionManager.toggle(item)
-                      } else {
-                        if (selectionManager.isInSelectionMode) {
-                          selectionManager.toggle(item)
-                        } else {
-                          coroutineScope.launch {
-                            onPlaylistClick(item)
-                          }
-                        }
-                      }
-                    },
-                    customIcon = Icons.AutoMirrored.Filled.PlaylistPlay,
-                    showDateModified = true,
-                    isGridMode = true,
-                  )
-                }
-              }
-            }
-          }
-        }
-      }
-    } else {
-      val navigationBarHeight = app.marlboroadvance.mpvex.ui.browser.LocalNavigationBarHeight.current
-      Box(
-        modifier = Modifier
-          .fillMaxSize()
-          .padding(bottom = navigationBarHeight)
-      ) {
-        LazyColumnScrollbar(
+        LazyColumn(
           state = listState,
-          settings = ScrollbarSettings(
-            thumbUnselectedColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.4f * scrollbarAlpha),
-            thumbSelectedColor = MaterialTheme.colorScheme.primary.copy(alpha = scrollbarAlpha),
+          modifier = Modifier.fillMaxSize(),
+          contentPadding = PaddingValues(
+            start = 8.dp,
+            end = 8.dp,
+            bottom = if (isInSelectionMode) 88.dp else 16.dp
           ),
         ) {
-          LazyColumn(
-            state = listState,
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(
-              start = 8.dp,
-              end = 8.dp,
-              bottom = if (isInSelectionMode) 88.dp else 16.dp
-            ),
-          ) {
-            items(
-              count = recentItems.size,
-              key = { index ->
-                when (val item = recentItems[index]) {
-                  is RecentlyPlayedItem.VideoItem -> "video_${item.video.id}_${item.timestamp}"
-                  is RecentlyPlayedItem.PlaylistItem -> "playlist_${item.playlist.id}_${item.timestamp}"
-                }
-              },
-            ) { index ->
+          items(
+            count = recentItems.size,
+            key = { index ->
               when (val item = recentItems[index]) {
-                is RecentlyPlayedItem.VideoItem -> {
-                  VideoCard(
-                    video = item.video,
-                    progressPercentage = null,
-                    isSelected = selectionManager.isSelected(item),
-                    onClick = {
+                is RecentlyPlayedItem.VideoItem -> "video_${item.video.id}_${item.timestamp}"
+                is RecentlyPlayedItem.PlaylistItem -> "playlist_${item.playlist.id}_${item.timestamp}"
+              }
+            },
+          ) { index ->
+            when (val item = recentItems[index]) {
+              is RecentlyPlayedItem.VideoItem -> {
+                VideoCard(
+                  video = item.video,
+                  progressPercentage = null,
+                  isSelected = selectionManager.isSelected(item),
+                  onClick = {
+                    if (selectionManager.isInSelectionMode) {
+                      selectionManager.toggle(item)
+                    } else {
+                      onVideoClick(item.video)
+                    }
+                  },
+                  onLongClick = { selectionManager.toggle(item) },
+                  onThumbClick = if (tapThumbnailToSelect) {
+                    { selectionManager.toggle(item) }
+                  } else {
+                    {
                       if (selectionManager.isInSelectionMode) {
                         selectionManager.toggle(item)
                       } else {
                         onVideoClick(item.video)
                       }
-                    },
-                    onLongClick = { selectionManager.toggle(item) },
-                    onThumbClick = if (tapThumbnailToSelect) {
-                      { selectionManager.toggle(item) }
-                    } else {
-                      {
-                        if (selectionManager.isInSelectionMode) {
-                          selectionManager.toggle(item)
-                        } else {
-                          onVideoClick(item.video)
-                        }
-                      }
-                    },
-                    isGridMode = false,
-                    showSubtitleIndicator = showSubtitleIndicator,
-                  )
-                }
+                    }
+                  },
+                  isGridMode = false,
+                  showSubtitleIndicator = showSubtitleIndicator,
+                )
+              }
 
-                is RecentlyPlayedItem.PlaylistItem -> {
-                  val folderModel = VideoFolder(
-                    bucketId = item.playlist.id.toString(),
-                    name = item.playlist.name,
-                    path = "",
-                    videoCount = item.videoCount,
-                    totalSize = 0,
-                    totalDuration = 0,
-                    lastModified = item.playlist.updatedAt / 1000,
-                  )
-                  FolderCard(
-                    folder = folderModel,
-                    isSelected = selectionManager.isSelected(item),
-                    isRecentlyPlayed = false,
-                    onClick = {
+              is RecentlyPlayedItem.PlaylistItem -> {
+                val folderModel = VideoFolder(
+                  bucketId = item.playlist.id.toString(),
+                  name = item.playlist.name,
+                  path = "",
+                  videoCount = item.videoCount,
+                  totalSize = 0,
+                  totalDuration = 0,
+                  lastModified = item.playlist.updatedAt / 1000,
+                )
+                FolderCard(
+                  folder = folderModel,
+                  isSelected = selectionManager.isSelected(item),
+                  isRecentlyPlayed = false,
+                  onClick = {
+                    if (selectionManager.isInSelectionMode) {
+                      selectionManager.toggle(item)
+                    } else {
+                      coroutineScope.launch {
+                        onPlaylistClick(item)
+                      }
+                    }
+                  },
+                  onLongClick = { selectionManager.toggle(item) },
+                  onThumbClick = {
+                    if (tapThumbnailToSelect) {
+                      selectionManager.toggle(item)
+                    } else {
                       if (selectionManager.isInSelectionMode) {
                         selectionManager.toggle(item)
                       } else {
@@ -696,26 +571,12 @@ private fun RecentItemsContent(
                           onPlaylistClick(item)
                         }
                       }
-                    },
-                    onLongClick = { selectionManager.toggle(item) },
-                    onThumbClick = {
-                      if (tapThumbnailToSelect) {
-                        selectionManager.toggle(item)
-                      } else {
-                        if (selectionManager.isInSelectionMode) {
-                          selectionManager.toggle(item)
-                        } else {
-                          coroutineScope.launch {
-                            onPlaylistClick(item)
-                          }
-                        }
-                      }
-                    },
-                    customIcon = Icons.AutoMirrored.Filled.PlaylistPlay,
-                    showDateModified = true,
-                    isGridMode = false,
-                  )
-                }
+                    }
+                  },
+                  customIcon = Icons.AutoMirrored.Filled.PlaylistPlay,
+                  showDateModified = true,
+                  isGridMode = false,
+                )
               }
             }
           }
@@ -724,4 +585,3 @@ private fun RecentItemsContent(
     }
   }
 }
-

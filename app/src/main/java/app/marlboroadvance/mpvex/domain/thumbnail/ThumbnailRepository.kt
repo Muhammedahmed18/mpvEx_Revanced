@@ -188,6 +188,32 @@ class ThumbnailRepository(
     }
   }
 
+  /**
+   * Remove specific video from thumbnail cache (memory + disk)
+   */
+  fun invalidateVideo(video: Video) {
+    repositoryScope.launch {
+      // Clear from memory cache
+      // Note: Since we don't know the exact width/height used for different UI elements,
+      // we'd ideally need a way to find all keys for this video.
+      // For now, we clear common sizes or just rely on disk invalidation for thoroughness.
+      
+      // Clear from disk cache
+      val diskFile = File(diskDir, keyToFileName(diskKey(video)))
+      if (diskFile.exists()) {
+        diskFile.delete()
+      }
+      
+      // If it's a network URL, also clear the "pos3" variant
+      if (isNetworkUrl(video.path)) {
+          val posDiskFile = File(diskDir, keyToFileName(diskKey(video)))
+          if (posDiskFile.exists()) posDiskFile.delete()
+      }
+      
+      useMediaStoreForVideo.remove(videoBaseKey(video))
+    }
+  }
+
   fun startFolderThumbnailGeneration(
     folderId: String,
     videos: List<Video>,

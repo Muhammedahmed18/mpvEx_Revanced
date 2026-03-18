@@ -14,6 +14,7 @@ import app.marlboroadvance.mpvex.repository.MediaFileRepository
 import app.marlboroadvance.mpvex.ui.browser.base.BaseBrowserViewModel
 import app.marlboroadvance.mpvex.utils.media.MediaLibraryEvents
 import app.marlboroadvance.mpvex.utils.media.MetadataRetrieval
+import app.marlboroadvance.mpvex.utils.permission.PermissionUtils.StorageOps
 import app.marlboroadvance.mpvex.utils.sort.SortUtils
 import app.marlboroadvance.mpvex.utils.storage.FolderViewScanner
 import app.marlboroadvance.mpvex.utils.storage.TreeViewScanner
@@ -91,12 +92,13 @@ class FileSystemBrowserViewModel(
       }
     }
 
-  // Track if items were deleted/moved leaving folder empty
+  // Track if items were deleted or moved to show appropriate empty states
   private val _itemsWereDeletedOrMoved = MutableStateFlow(false)
   val itemsWereDeletedOrMoved: StateFlow<Boolean> = _itemsWereDeletedOrMoved.asStateFlow()
 
-  // Track previous item count per path to detect if folder became empty
-  private val itemCountByPath = mutableMapOf<String, Int>()
+  fun setItemsWereDeletedOrMoved() {
+    _itemsWereDeletedOrMoved.value = true
+  }
 
   companion object {
     private const val TAG = "FileSystemBrowserVM"
@@ -160,6 +162,41 @@ class FileSystemBrowserViewModel(
       }.collectLatest { sortedItems ->
         _items.value = sortedItems
         Log.d(TAG, "Items sorted: ${sortedItems.size} items")
+      }
+    }
+
+    // Observe subtitle indicator preference changes
+    viewModelScope.launch {
+      browserPreferences.showSubtitleIndicator.changes().collectLatest { enabled ->
+        if (enabled) {
+          Log.d(TAG, "Subtitle indicator enabled, enriching current items")
+          val currentItems = _unsortedItems.value
+          val videoFiles = currentItems.filterIsInstance<FileSystemItem.VideoFile>()
+          
+          if (videoFiles.isNotEmpty()) {
+            val videos = videoFiles.map { it.video }
+            val enrichedVideos = MetadataRetrieval.enrichVideosIfNeeded(
+              context = getApplication(),
+              videos = videos,
+              browserPreferences = browserPreferences,
+              metadataCache = metadataCache
+            )
+            
+            if (enrichedVideos != videos) {
+              val enrichedVideoMap = enrichedVideos.associateBy { it.id }
+              val enrichedItems = currentItems.map { item ->
+                when (item) {
+                  is FileSystemItem.VideoFile -> {
+                    enrichedVideoMap[item.video.id]?.let { item.copy(video = it) } ?: item
+                  }
+                  else -> item
+                }
+              }
+              _unsortedItems.value = enrichedItems
+              loadPlaybackInfo(enrichedItems)
+            }
+          }
+        }
       }
     }
   }
@@ -244,13 +281,6 @@ class FileSystemBrowserViewModel(
   }
 
   /**
-   * Set flag indicating items were deleted or moved
-   */
-  fun setItemsWereDeletedOrMoved() {
-    _itemsWereDeletedOrMoved.value = true
-  }
-
-  /**
    * Delete folders (and their contents)
    * Based on Fossify's deleteFiles() logic with folder support
    */
@@ -276,15 +306,22 @@ class FileSystemBrowserViewModel(
       }
     }
 
-    // Set flag if any deletions were successful
+    // Notify that media library has changed if any deletions were successful
     if (successCount > 0) {
-      _itemsWereDeletedOrMoved.value = true
-      // Notify that media library has changed
       MediaLibraryEvents.notifyChanged()
+      _itemsWereDeletedOrMoved.value = true
     }
 
     Log.d(TAG, "Folder deletion complete: $successCount success, $failureCount failed")
     return Pair(successCount, failureCount)
+  }
+
+  /**
+   * Rename a folder
+   */
+  suspend fun renameFolder(folder: FileSystemItem.Folder, newName: String): Result<Unit> {
+    Log.d(TAG, "Renaming folder ${folder.path} to $newName")
+    return StorageOps.renameFolder(getApplication(), folder.path, newName)
   }
 
   /**
@@ -294,12 +331,9 @@ class FileSystemBrowserViewModel(
   override suspend fun deleteVideos(videos: List<Video>): Pair<Int, Int> {
     Log.d(TAG, "Deleting ${videos.size} videos")
     val result = super.deleteVideos(videos)
-
-    // Set flag if any deletions were successful
     if (result.first > 0) {
       _itemsWereDeletedOrMoved.value = true
     }
-
     return result
   }
 
@@ -323,7 +357,6 @@ class FileSystemBrowserViewModel(
     viewModelScope.launch(Dispatchers.IO) {
       _isLoading.value = true
       _error.value = null
-      // Don't reset the flag here - let navigation handle it
 
       try {
         val path = _currentPath.value
@@ -348,21 +381,6 @@ class FileSystemBrowserViewModel(
           MediaFileRepository
             .scanDirectory(getApplication(), path, showAllFileTypes = false)
             .onSuccess { items ->
-              // Get previous count for this path
-              val previousCount = itemCountByPath[path] ?: 0
-
-              // Check if folder became empty after having items
-              if (previousCount > 0 && items.isEmpty()) {
-                _itemsWereDeletedOrMoved.value = true
-                Log.d(TAG, "Folder became empty (had $previousCount items before)")
-              } else if (items.isNotEmpty()) {
-                // Reset flag if folder now has items
-                _itemsWereDeletedOrMoved.value = false
-              }
-
-              // Update count for this path
-              itemCountByPath[path] = items.size
-
               _unsortedItems.value = items
 
               val folderCount = items.filterIsInstance<FileSystemItem.Folder>().size

@@ -106,6 +106,9 @@ class PlayerViewModel(
   private val _isSearchingSub = MutableStateFlow(false)
   val isSearchingSub: StateFlow<Boolean> = _isSearchingSub.asStateFlow()
 
+  private val _hasSearchedSub = MutableStateFlow(false)
+  val hasSearchedSub: StateFlow<Boolean> = _hasSearchedSub.asStateFlow()
+
   private val _isOnlineSectionExpanded = MutableStateFlow(true)
   val isOnlineSectionExpanded: StateFlow<Boolean> = _isOnlineSectionExpanded.asStateFlow()
 
@@ -644,6 +647,10 @@ class PlayerViewModel(
     mediaSearchJob = viewModelScope.launch {
       delay(300) // Debounce
       _isSearchingMedia.value = true
+      // Clear previous subtitle results when a new media search starts
+      _wyzieSearchResults.value = emptyList()
+      _hasSearchedSub.value = false
+      
       wyzieRepository.searchMedia(query)
         .onSuccess { results ->
           _mediaSearchResults.value = results
@@ -658,13 +665,13 @@ class PlayerViewModel(
   fun selectMedia(result: app.marlboroadvance.mpvex.repository.wyzie.WyzieTmdbResult) {
     _mediaSearchResults.value = emptyList() // Clear results after selection
     _wyzieSearchResults.value = emptyList() // Clear old subtitle results
+    _hasSearchedSub.value = false // Reset search status on new media selection
     
     if (result.mediaType == "tv") {
       fetchTvShowDetails(result.id)
     } else {
       // For movies, just search subtitles directly with the TMDB ID
-      searchSubtitles(result.title)
-      // Ideally we should pass the TMDB ID to searchSubtitles too if the API supports it
+      searchSubtitles(result.title, mediaId = result.id.toString())
     }
   }
 
@@ -706,8 +713,10 @@ class PlayerViewModel(
 
   fun selectEpisode(episode: app.marlboroadvance.mpvex.repository.wyzie.WyzieEpisode) {
     _selectedEpisode.value = episode
-    val tvShowName = _selectedTvShow.value?.name ?: currentMediaTitle
-    searchSubtitles(tvShowName, episode.season_number, episode.episode_number)
+    val tvShow = _selectedTvShow.value
+    val tvShowName = tvShow?.name ?: currentMediaTitle
+    val tvShowId = tvShow?.id?.toString()
+    searchSubtitles(tvShowName, mediaId = tvShowId, season = episode.season_number, episode = episode.episode_number)
   }
 
   fun clearMediaSelection() {
@@ -716,18 +725,23 @@ class PlayerViewModel(
     _seasonEpisodes.value = emptyList()
     _selectedEpisode.value = null
     _mediaSearchResults.value = emptyList()
+    _wyzieSearchResults.value = emptyList() // Clear subtitle results
+    _hasSearchedSub.value = false
   }
 
   // --- Subtitle Search ---
-  fun searchSubtitles(query: String, season: Int? = null, episode: Int? = null, year: String? = null) {
+  fun searchSubtitles(query: String, mediaId: String? = null, season: Int? = null, episode: Int? = null, year: String? = null) {
      viewModelScope.launch {
          _isSearchingSub.value = true
-         wyzieRepository.search(query, season, episode, year)
+         _hasSearchedSub.value = false
+         wyzieRepository.search(query, mediaId, season, episode, year)
              .onSuccess { results ->
                  _wyzieSearchResults.value = results
+                 _hasSearchedSub.value = true
              }
              .onFailure {
                  showToast("Search failed: ${it.message}")
+                 _hasSearchedSub.value = true // Even if failed, search was attempted
              }
          _isSearchingSub.value = false
      }
@@ -750,21 +764,19 @@ class PlayerViewModel(
 
   fun toggleSubtitle(id: Int) {
     val primarySid = MPVLib.getPropertyInt("sid") ?: 0
-    val secondarySid = MPVLib.getPropertyInt("secondary-sid") ?: 0
 
-    when {
-      id == primarySid -> MPVLib.setPropertyString("sid", "no")
-      id == secondarySid -> MPVLib.setPropertyString("secondary-sid", "no")
-      primarySid <= 0 -> MPVLib.setPropertyInt("sid", id)
-      secondarySid <= 0 -> MPVLib.setPropertyInt("secondary-sid", id)
-      else -> MPVLib.setPropertyInt("sid", id)
+    if (id == primarySid) {
+      MPVLib.setPropertyString("sid", "no")
+    } else {
+      MPVLib.setPropertyInt("sid", id)
     }
+    // Ensure secondary-sid is always disabled for single-subtitle mode
+    MPVLib.setPropertyString("secondary-sid", "no")
   }
 
   fun isSubtitleSelected(id: Int): Boolean {
     val primarySid = MPVLib.getPropertyInt("sid") ?: 0
-    val secondarySid = MPVLib.getPropertyInt("secondary-sid") ?: 0
-    return (id == primarySid && primarySid > 0) || (id == secondarySid && secondarySid > 0)
+    return id == primarySid && primarySid > 0
   }
 
   private fun getFileNameFromUri(uri: Uri): String? =

@@ -140,6 +140,7 @@ fun PlayerSheets(
     Sheets.OnlineSubtitleSearch -> {
       val isSearching by viewModel.isSearchingSub.composeCollectAsState()
       val isDownloading by viewModel.isDownloadingSub.composeCollectAsState()
+      val hasSearched by viewModel.hasSearchedSub.composeCollectAsState()
       val results by viewModel.wyzieSearchResults.composeCollectAsState()
       val isOnlineSectionExpanded by viewModel.isOnlineSectionExpanded.composeCollectAsState()
 
@@ -160,6 +161,7 @@ fun PlayerSheets(
         onDownloadOnline = { viewModel.downloadSubtitle(it) },
         isSearching = isSearching,
         isDownloading = isDownloading,
+        hasSearched = hasSearched,
         searchResults = results.toImmutableList(),
         isOnlineSectionExpanded = isOnlineSectionExpanded,
         onToggleOnlineSection = { viewModel.toggleOnlineSection() },
@@ -168,19 +170,12 @@ fun PlayerSheets(
         mediaSearchResults = mediaResults.toImmutableList(),
         isSearchingMedia = isSearchingMedia,
         onSearchMedia = { query ->
-          // Parse both the user's search query and the original filename
+          // Parse the user's search query
           val queryInfo = MediaInfoParser.parse(query)
-          val fileInfo = MediaInfoParser.parse(viewModel.currentMediaTitle)
           
           // Use clean title from query for TMDB search (strip S01E05 noise)
           val searchTitle = queryInfo.title.ifBlank { query }
           viewModel.searchMedia(searchTitle)
-          
-          // Priority: TMDB selection > query parsed > file parsed
-          val s = selectedSeason?.season_number ?: queryInfo.season ?: fileInfo.season
-          val e = selectedEpisode?.episode_number ?: queryInfo.episode ?: fileInfo.episode
-          val y = queryInfo.year ?: fileInfo.year
-          viewModel.searchSubtitles(searchTitle, s, e, y)
         },
         onSelectMedia = { viewModel.selectMedia(it) },
         selectedTvShow = selectedTvShow,

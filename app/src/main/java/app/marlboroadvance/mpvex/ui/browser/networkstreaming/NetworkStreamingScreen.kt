@@ -14,20 +14,16 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.SignalWifiConnectedNoInternet4
 import androidx.compose.material.icons.rounded.SignalWifiStatusbarConnectedNoInternet4
-import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.Icon
@@ -37,7 +33,6 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
@@ -58,14 +53,10 @@ import app.marlboroadvance.mpvex.ui.browser.components.BrowserTopBar
 import app.marlboroadvance.mpvex.ui.browser.cards.NetworkConnectionCard
 import app.marlboroadvance.mpvex.ui.browser.dialogs.AddConnectionSheet
 import app.marlboroadvance.mpvex.ui.browser.dialogs.EditConnectionSheet
-import app.marlboroadvance.mpvex.ui.browser.states.EmptyState
-import app.marlboroadvance.mpvex.ui.preferences.PreferencesScreen
 import app.marlboroadvance.mpvex.ui.utils.LocalBackStack
 import app.marlboroadvance.mpvex.utils.media.MediaUtils
-import kotlinx.coroutines.launch
 import kotlinx.serialization.Serializable
 import org.koin.compose.koinInject
-import app.marlboroadvance.mpvex.preferences.FolderViewMode
 
 @Serializable
 object NetworkStreamingScreen : Screen {
@@ -79,30 +70,23 @@ object NetworkStreamingScreen : Screen {
 
     val connections by viewModel.connections.collectAsState()
     val connectionStatuses by viewModel.connectionStatuses.collectAsState()
-    val browserPreferences = koinInject<app.marlboroadvance.mpvex.preferences.BrowserPreferences>()
     var showAddSheet by remember { mutableStateOf(false) }
     var editingConnection by remember { mutableStateOf<NetworkConnection?>(null) }
     val navigationBarHeight = app.marlboroadvance.mpvex.ui.browser.LocalNavigationBarHeight.current
 
-    // LazyList state for scroll tracking
     val listState = LazyListState()
 
-    // Track scroll direction to show/hide FAB
     var previousFirstVisibleItemIndex by remember { mutableIntStateOf(0) }
     var previousFirstVisibleItemScrollOffset by remember { mutableIntStateOf(0) }
-    
-    val coroutineScope = androidx.compose.runtime.rememberCoroutineScope()
     
     val isFabVisible by remember {
       derivedStateOf {
         val currentIndex = listState.firstVisibleItemIndex
         val currentOffset = listState.firstVisibleItemScrollOffset
 
-        // Show FAB when at the top
         if (currentIndex == 0 && currentOffset == 0) {
           true
         } else {
-          // Show when scrolling up, hide when scrolling down
           val isScrollingUp = currentIndex < previousFirstVisibleItemIndex ||
             (currentIndex == previousFirstVisibleItemIndex && currentOffset < previousFirstVisibleItemScrollOffset)
 
@@ -121,10 +105,9 @@ object NetworkStreamingScreen : Screen {
             isInSelectionMode = false,
             selectedCount = 0,
             totalCount = 0,
-            onBackClick = null, // No back button for network screen (root tab)
+            onBackClick = null,
             onCancelSelection = { },
           onSortClick = null,
-          // Search functionality disabled for production
           onSearchClick = null,
           onSettingsClick = {
             backstack.add(app.marlboroadvance.mpvex.ui.preferences.PreferencesScreen)
@@ -164,7 +147,6 @@ object NetworkStreamingScreen : Screen {
           bottom = navigationBarHeight
         ),
       ) {
-          // Section 1: Stream Link
           item {
             StreamLinkSection(
               onPlayLink = { url ->
@@ -173,7 +155,6 @@ object NetworkStreamingScreen : Screen {
             )
           }
 
-          // Section 2: Local Network header
           item {
             Spacer(modifier = Modifier.height(24.dp))
             Text(
@@ -185,7 +166,6 @@ object NetworkStreamingScreen : Screen {
             )
           }
 
-          // Show empty state or connection list
           if (connections.isEmpty()) {
             item {
               Card(
@@ -211,7 +191,7 @@ object NetworkStreamingScreen : Screen {
                     text = "No network connections",
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onSurface, // a
+                    color = MaterialTheme.colorScheme.onSurface,
                   )
                   Spacer(modifier = Modifier.height(8.dp))
                   Text(
@@ -235,13 +215,12 @@ object NetworkStreamingScreen : Screen {
                 onEdit = { conn -> editingConnection = conn },
                 onDelete = { conn -> viewModel.deleteConnection(conn) },
                 onBrowse = { conn ->
-                  // Navigate to browser screen if connected
                   if (status?.isConnected == true) {
                     backstack.add(
                       NetworkBrowserScreen(
                         connectionId = conn.id,
                         connectionName = conn.name,
-                        currentPath = "/",  // Always start at root - conn.path is already included in connection
+                        currentPath = "/",
                       ),
                     )
                   }
@@ -258,7 +237,6 @@ object NetworkStreamingScreen : Screen {
           }
         }
 
-      // Add Connection Sheet
       AddConnectionSheet(
         isOpen = showAddSheet,
         onDismiss = { showAddSheet = false },
@@ -268,7 +246,6 @@ object NetworkStreamingScreen : Screen {
         },
       )
 
-      // Edit Connection Sheet
       editingConnection?.let { connection ->
         EditConnectionSheet(
           connection = connection,

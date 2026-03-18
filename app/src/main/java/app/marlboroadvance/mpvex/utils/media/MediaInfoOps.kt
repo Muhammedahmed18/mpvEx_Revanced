@@ -343,19 +343,21 @@ object MediaInfoOps {
             val codecs = mutableSetOf<String>()
             for (i in 0 until textCount) {
               val codecId = mi.getInfo(MediaInfo.Stream.Text, i, "CodecID")
+              val format = mi.getInfo(MediaInfo.Stream.Text, i, "Format")
 
               val normalizedCodec = when {
-                codecId.contains("PGS", ignoreCase = true) -> "PGS"
-                codecId.contains("ASS", ignoreCase = true) -> "ASS"
-                codecId.contains("SSA", ignoreCase = true) -> "SSA"
-                codecId.contains("SRT", ignoreCase = true) -> "SRT"
-                codecId.contains("SUBRIP", ignoreCase = true) -> "SRT"
-                codecId.contains("VOBSUB", ignoreCase = true) -> "DVD"
-                codecId.contains("WEBVTT", ignoreCase = true) -> "VTT"
-                codecId.contains("UTF8", ignoreCase = true) -> "SRT"
+                codecId.contains("PGS", ignoreCase = true) || format.contains("PGS", ignoreCase = true) -> "PGS"
+                codecId.contains("ASS", ignoreCase = true) || format.contains("ASS", ignoreCase = true) -> "ASS"
+                codecId.contains("SSA", ignoreCase = true) || format.contains("SSA", ignoreCase = true) -> "SSA"
+                codecId.contains("SRT", ignoreCase = true) || format.contains("SRT", ignoreCase = true) -> "SRT"
+                codecId.contains("SUBRIP", ignoreCase = true) || format.contains("SUBRIP", ignoreCase = true) -> "SRT"
+                codecId.contains("VOBSUB", ignoreCase = true) || format.contains("VOBSUB", ignoreCase = true) -> "DVD"
+                codecId.contains("WEBVTT", ignoreCase = true) || format.contains("WEBVTT", ignoreCase = true) -> "VTT"
+                codecId.contains("UTF8", ignoreCase = true) || format.contains("UTF8", ignoreCase = true) -> "SRT"
                 codecId.contains("HDMV", ignoreCase = true) -> "PGS"
                 codecId.contains("DVB", ignoreCase = true) -> "DVB"
-                codecId.contains("MOV_TEXT", ignoreCase = true) -> "TX3G"
+                codecId.contains("MOV_TEXT", ignoreCase = true) || format.contains("MOV_TEXT", ignoreCase = true) -> "TX3G"
+                format.isNotEmpty() -> format.uppercase()
                 codecId.isNotEmpty() -> {
                   codecId.substringAfterLast("/").substringAfterLast("_").uppercase()
                 }

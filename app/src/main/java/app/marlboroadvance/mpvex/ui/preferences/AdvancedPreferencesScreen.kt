@@ -44,6 +44,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.util.fastJoinToString
 import androidx.core.net.toUri
 import androidx.documentfile.provider.DocumentFile
+import app.marlboroadvance.mpvex.MainActivity
 import app.marlboroadvance.mpvex.R
 import app.marlboroadvance.mpvex.database.MpvExDatabase
 import app.marlboroadvance.mpvex.domain.thumbnail.ThumbnailRepository
@@ -83,6 +84,7 @@ object AdvancedPreferencesScreen : Screen {
     var showExportDialog by remember { mutableStateOf(false) }
     var importStats by remember { mutableStateOf<SettingsManager.ImportStats?>(null) }
     var exportStats by remember { mutableStateOf<SettingsManager.ExportStats?>(null) }
+    val activity = LocalActivity.current
 
     // Export settings launcher
     val exportLauncher =
@@ -170,8 +172,14 @@ object AdvancedPreferencesScreen : Screen {
           )
         },
         confirmButton = {
-          TextButton(onClick = { showImportDialog = false }) {
-            Text("OK")
+          TextButton(onClick = { 
+            showImportDialog = false 
+            activity?.finish()
+            val intent = Intent(context, MainActivity::class.java)
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+            context.startActivity(intent)
+          }) {
+            Text("Restart")
           }
         },
       )

@@ -190,6 +190,28 @@ fun SeekbarWithTimers(
         contentAlignment = Alignment.Center,
       ) {
       when (seekbarStyle) {
+        SeekbarStyle.Simple -> {
+          StandardSeekbar(
+            position = if (isUserInteracting) userPosition else animatedPosition.value,
+            duration = duration,
+            chapters = chapters,
+            isPaused = paused,
+            isScrubbing = isUserInteracting,
+            seekbarStyle = SeekbarStyle.Simple,
+            onSeek = { newPosition ->
+              if (!isUserInteracting) isUserInteracting = true
+              userPosition = newPosition
+              onValueChange(newPosition)
+            },
+            onSeekFinished = {
+              scope.launch { animatedPosition.snapTo(userPosition) }
+              isUserInteracting = false
+              onValueChangeFinished()
+            },
+            loopStart = loopStart,
+            loopEnd = loopEnd,
+          )
+        }
         SeekbarStyle.Standard -> {
           StandardSeekbar(
             position = if (isUserInteracting) userPosition else animatedPosition.value,
@@ -582,11 +604,12 @@ fun StandardSeekbar(
     }
     
     val isThick = seekbarStyle == SeekbarStyle.Thick
-    val baseTrackHeight = if (isThick) 16.dp else 8.dp
-    val trackHeightDp = baseTrackHeight * heightFraction // Apply animation to track height
-    val thumbWidth = 6.dp
-    val thumbHeight = if (isThick) 16.dp else 24.dp
-    val thumbShape = if (isThick) RoundedCornerShape(thumbWidth / 2) else CircleShape
+    val isSimple = seekbarStyle == SeekbarStyle.Simple
+    val baseTrackHeight = if (isThick) 16.dp else if (isSimple) 4.dp else 8.dp
+    val trackHeightDp = if (isSimple) baseTrackHeight else baseTrackHeight * heightFraction // No height animation for Simple
+    val thumbWidth = if (isSimple) 4.dp else 6.dp
+    val thumbHeight = if (isThick) 16.dp else if (isSimple) 16.dp else 24.dp
+    val thumbShape = if (isSimple) RoundedCornerShape(2.dp) else if (isThick) RoundedCornerShape(thumbWidth / 2) else CircleShape
 
     Slider(
         value = position,
@@ -601,7 +624,7 @@ fun StandardSeekbar(
             Canvas(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(trackHeightDp),
+                    .height(thumbHeight), // Match thumb height to ensure central alignment
             ) {
                 val min = sliderState.valueRange.start
                 val max = sliderState.valueRange.endInclusive
@@ -610,15 +633,17 @@ fun StandardSeekbar(
                 val playedFraction = ((sliderState.value - min) / range).coerceIn(0f, 1f)
 
                 val playedPx = size.width * playedFraction
-                val trackHeight = size.height
+                val trackHeight = trackHeightDp.toPx()
+                val centerY = size.height / 2f
+                val trackTop = centerY - trackHeight / 2f
                 
                 // Radius for the outer ends of the seekbar
                 val outerRadius = trackHeight / 2f
                 
-                // MODIFIED: For Thick style, inner corners now match the outer rounding
-                val innerRadius = if (isThick) outerRadius else 2.dp.toPx()
+                // MODIFIED: For Thick/Simple style, inner corners now match the outer rounding
+                val innerRadius = if (isThick || isSimple) outerRadius else 2.dp.toPx()
                 
-                val thumbTrackGapSize = 14.dp.toPx()
+                val thumbTrackGapSize = if (isSimple) 0.dp.toPx() else 14.dp.toPx()
                 val gapHalf = thumbTrackGapSize / 2f
                 val chapterGapHalf = 1.dp.toPx()
                 
@@ -653,9 +678,9 @@ fun StandardSeekbar(
                     path.addRoundRect(
                         androidx.compose.ui.geometry.RoundRect(
                             left = startX,
-                            top = 0f,
+                            top = trackTop,
                             right = endX,
-                            bottom = trackHeight,
+                            bottom = trackTop + trackHeight,
                             topLeftCornerRadius = cornerRadiusLeft,
                             bottomLeftCornerRadius = cornerRadiusLeft,
                             topRightCornerRadius = cornerRadiusRight,
@@ -707,8 +732,8 @@ fun StandardSeekbar(
                         val startPx = (loopStart / duration).coerceIn(0f, 1f) * size.width
                         drawLine(
                             color = loopColor,
-                            start = Offset(startPx, 0f),
-                            end = Offset(startPx, size.height),
+                            start = Offset(startPx, trackTop),
+                            end = Offset(startPx, trackTop + trackHeight),
                             strokeWidth = markerWidth
                         )
                     }
@@ -718,8 +743,8 @@ fun StandardSeekbar(
                         val endPx = (loopEnd / duration).coerceIn(0f, 1f) * size.width
                         drawLine(
                             color = loopColor,
-                            start = Offset(endPx, 0f),
-                            end = Offset(endPx, size.height),
+                            start = Offset(endPx, trackTop),
+                            end = Offset(endPx, trackTop + trackHeight),
                             strokeWidth = markerWidth
                         )
                     }
@@ -732,8 +757,8 @@ fun StandardSeekbar(
                         // Draw a semi-transparent overlay between A and B
                         drawRect(
                             color = loopColor.copy(alpha = 0.3f),
-                            topLeft = Offset(minPx, 0f),
-                            size = Size(maxPx - minPx, size.height)
+                            topLeft = Offset(minPx, trackTop),
+                            size = Size(maxPx - minPx, trackHeight)
                         )
                     }
                 }
@@ -744,7 +769,7 @@ fun StandardSeekbar(
                     modifier = Modifier
                         .width(thumbWidth)
                         .height(thumbHeight)
-                        .background(primaryColor, thumbShape)
+                        .background(if (isSimple) Color.White else primaryColor, thumbShape)
                 )
             }
         )

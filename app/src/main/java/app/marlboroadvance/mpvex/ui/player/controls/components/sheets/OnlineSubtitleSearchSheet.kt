@@ -28,6 +28,7 @@ import kotlinx.collections.immutable.toImmutableList
 sealed class OnlineSubtitleItem {
   data class OnlineTrack(val subtitle: WyzieSubtitle) : OnlineSubtitleItem()
   data class Header(val title: String) : OnlineSubtitleItem()
+  data class Empty(val message: String) : OnlineSubtitleItem()
   object Divider : OnlineSubtitleItem()
 }
 
@@ -37,6 +38,7 @@ fun OnlineSubtitleSearchSheet(
   onDownloadOnline: (WyzieSubtitle) -> Unit,
   isSearching: Boolean = false,
   isDownloading: Boolean = false,
+  hasSearched: Boolean = false,
   searchResults: ImmutableList<WyzieSubtitle> = emptyList<WyzieSubtitle>().toImmutableList(),
   isOnlineSectionExpanded: Boolean = true,
   onToggleOnlineSection: () -> Unit = {},
@@ -57,14 +59,18 @@ fun OnlineSubtitleSearchSheet(
   onSelectEpisode: (app.marlboroadvance.mpvex.repository.wyzie.WyzieEpisode) -> Unit = {},
   onClearMediaSelection: () -> Unit = {}
 ) {
-  val items = remember(searchResults, isSearching, isOnlineSectionExpanded) {
+  val items = remember(searchResults, isSearching, hasSearched, isOnlineSectionExpanded) {
     val list = mutableListOf<OnlineSubtitleItem>()
     
-    // Online Search Results section
-    if (searchResults.isNotEmpty() || isSearching) {
+    // Online Search Results section - only show if search has been performed
+    if (hasSearched || isSearching) {
         list.add(OnlineSubtitleItem.Header("Online Results (${searchResults.size})"))
         if (isOnlineSectionExpanded) {
-            list.addAll(searchResults.map { OnlineSubtitleItem.OnlineTrack(it) })
+            if (searchResults.isEmpty() && !isSearching) {
+                list.add(OnlineSubtitleItem.Empty("No subtitles found for this media."))
+            } else {
+                list.addAll(searchResults.map { OnlineSubtitleItem.OnlineTrack(it) })
+            }
         }
     }
 
@@ -89,13 +95,6 @@ fun OnlineSubtitleSearchSheet(
             if (mediaInfo.episode != null) append("E${String.format("%02d", mediaInfo.episode)}")
           }
           mediaInfo.year?.let { append(" ($it)") }
-        }
-      }
-
-      // Auto-trigger search on open
-      LaunchedEffect(mediaInfo) {
-        if (mediaInfo.title.isNotBlank()) {
-          onSearchMedia(mediaInfo.title)
         }
       }
       
@@ -269,6 +268,20 @@ fun OnlineSubtitleSearchSheet(
                         modifier = Modifier.size(20.dp)
                     )
                 }
+            }
+        }
+        is OnlineSubtitleItem.Empty -> {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(MaterialTheme.spacing.medium),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = item.message,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
         }
         OnlineSubtitleItem.Divider -> {

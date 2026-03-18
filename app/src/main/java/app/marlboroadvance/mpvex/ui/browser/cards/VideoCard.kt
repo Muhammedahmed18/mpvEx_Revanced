@@ -307,6 +307,19 @@ fun VideoCard(
                   )
                 }
               }
+              if (video.hasExternalSubtitles) {
+                Text(
+                  text = "EXT",
+                  style = MaterialTheme.typography.labelSmall,
+                  modifier = Modifier
+                    .background(
+                      MaterialTheme.colorScheme.secondary,
+                      RoundedCornerShape(8.dp),
+                    )
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                  color = MaterialTheme.colorScheme.onSecondary,
+                )
+              }
             }
             if (showSizeChip && video.sizeFormatted != "0 B" && video.sizeFormatted != "--") {
               Text(
@@ -587,6 +600,19 @@ fun VideoCard(
                     color = MaterialTheme.colorScheme.onPrimary,
                   )
                 }
+              }
+              if (video.hasExternalSubtitles) {
+                Text(
+                  text = "EXT",
+                  style = MaterialTheme.typography.labelSmall,
+                  modifier = Modifier
+                    .background(
+                      MaterialTheme.colorScheme.secondary,
+                      RoundedCornerShape(8.dp),
+                    )
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                  color = MaterialTheme.colorScheme.onSecondary,
+                )
               }
             }
             if (showSizeChip && video.sizeFormatted != "0 B" && video.sizeFormatted != "--") {

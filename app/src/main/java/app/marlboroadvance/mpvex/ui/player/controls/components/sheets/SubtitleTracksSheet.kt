@@ -132,7 +132,7 @@ fun SubtitleTrackRow(
     verticalAlignment = Alignment.CenterVertically,
     horizontalArrangement = Arrangement.spacedBy(MaterialTheme.spacing.smaller),
   ) {
-    Checkbox(checked = isSelected, onCheckedChange = { onToggle() })
+    RadioButton(selected = isSelected, onClick = onToggle)
     Text(title, fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal, modifier = Modifier.weight(1f))
     if (isExternal) {
       IconButton(onClick = onRemove) { Icon(Icons.Default.Delete, contentDescription = null) }

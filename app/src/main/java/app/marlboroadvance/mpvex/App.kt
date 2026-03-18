@@ -7,6 +7,7 @@ import app.marlboroadvance.mpvex.di.FileManagerModule
 import app.marlboroadvance.mpvex.di.PreferencesModule
 import app.marlboroadvance.mpvex.presentation.crash.CrashActivity
 import app.marlboroadvance.mpvex.presentation.crash.GlobalExceptionHandler
+import app.marlboroadvance.mpvex.repository.MediaFileRepository
 import app.marlboroadvance.mpvex.utils.media.MediaLibraryEvents
 import `is`.xyz.mpv.FastThumbnails
 import kotlinx.coroutines.CoroutineScope
@@ -48,12 +49,20 @@ class App : Application() {
       }
     }
     
-    // Trigger media scan on app launch to detect new videos
+    // Start watching for media changes in storage
+    MediaFileRepository.startWatching(this)
+    
+    // Trigger initial media scan on app launch to detect new videos
     applicationScope.launch {
       runCatching {
         triggerMediaScanOnLaunch()
       }
     }
+  }
+
+  override fun onTerminate() {
+    super.onTerminate()
+    MediaFileRepository.stopWatching(this)
   }
   
   /**

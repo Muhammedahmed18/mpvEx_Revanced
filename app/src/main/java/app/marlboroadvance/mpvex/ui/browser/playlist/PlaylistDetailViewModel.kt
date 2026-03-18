@@ -11,6 +11,7 @@ import app.marlboroadvance.mpvex.database.repository.PlaylistRepository
 import app.marlboroadvance.mpvex.domain.media.model.Video
 import app.marlboroadvance.mpvex.repository.MediaFileRepository
 import app.marlboroadvance.mpvex.ui.browser.base.BaseBrowserViewModel
+import app.marlboroadvance.mpvex.utils.media.MetadataRetrieval
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -32,7 +33,7 @@ class PlaylistDetailViewModel(
 ) : BaseBrowserViewModel(application),
   KoinComponent {
   private val playlistRepository: PlaylistRepository by inject()
-  // Using MediaFileRepository singleton directly
+  private val browserPreferences: app.marlboroadvance.mpvex.preferences.BrowserPreferences by inject()
 
   private val _playlist = MutableStateFlow<PlaylistEntity?>(null)
   val playlist: StateFlow<PlaylistEntity?> = _playlist.asStateFlow()
@@ -135,10 +136,55 @@ class PlaylistDetailViewModel(
 
               Log.d(TAG, "Loaded ${videoItems.size} videos out of ${items.size} playlist items")
               _videoItems.value = videoItems
+              
+              // Enrich videos if metadata is needed
+              if (videoItems.isNotEmpty() && MetadataRetrieval.isVideoMetadataNeeded(browserPreferences)) {
+                val videos = videoItems.map { it.video }
+                val enrichedVideos = MetadataRetrieval.enrichVideosIfNeeded(
+                  context = getApplication(),
+                  videos = videos,
+                  browserPreferences = browserPreferences,
+                  metadataCache = metadataCache
+                )
+                
+                if (enrichedVideos != videos) {
+                  val enrichedVideoMap = enrichedVideos.associateBy { it.id }
+                  val enrichedVideoItems = videoItems.map { videoItem ->
+                    enrichedVideoMap[videoItem.video.id]?.let { videoItem.copy(video = it) } ?: videoItem
+                  }
+                  _videoItems.value = enrichedVideoItems
+                }
+              }
             }
           }
         } finally {
           _isLoading.value = false
+        }
+      }
+    }
+
+    // Observe subtitle indicator preference changes
+    viewModelScope.launch {
+      browserPreferences.showSubtitleIndicator.changes().collectLatest { enabled ->
+        if (enabled) {
+          val currentVideoItems = _videoItems.value
+          if (currentVideoItems.isNotEmpty()) {
+            val videos = currentVideoItems.map { it.video }
+            val enrichedVideos = MetadataRetrieval.enrichVideosIfNeeded(
+              context = getApplication(),
+              videos = videos,
+              browserPreferences = browserPreferences,
+              metadataCache = metadataCache
+            )
+            
+            if (enrichedVideos != videos) {
+              val enrichedVideoMap = enrichedVideos.associateBy { it.id }
+              val enrichedVideoItems = currentVideoItems.map { videoItem ->
+                enrichedVideoMap[videoItem.video.id]?.let { videoItem.copy(video = it) } ?: videoItem
+              }
+              _videoItems.value = enrichedVideoItems
+            }
+          }
         }
       }
     }
@@ -205,7 +251,25 @@ class PlaylistDetailViewModel(
               PlaylistVideoItem(item, video)
             }
           }
-          _videoItems.value = videoItems
+          
+          // Enrich videos if metadata is needed
+          val finalVideoItems = if (videoItems.isNotEmpty() && MetadataRetrieval.isVideoMetadataNeeded(browserPreferences)) {
+            val videos = videoItems.map { it.video }
+            val enrichedVideos = MetadataRetrieval.enrichVideosIfNeeded(
+              context = getApplication(),
+              videos = videos,
+              browserPreferences = browserPreferences,
+              metadataCache = metadataCache
+            )
+            val enrichedVideoMap = enrichedVideos.associateBy { it.id }
+            videoItems.map { videoItem ->
+              enrichedVideoMap[videoItem.video.id]?.let { videoItem.copy(video = it) } ?: videoItem
+            }
+          } else {
+            videoItems
+          }
+          
+          _videoItems.value = finalVideoItems
         }
       }
     } catch (e: Exception) {

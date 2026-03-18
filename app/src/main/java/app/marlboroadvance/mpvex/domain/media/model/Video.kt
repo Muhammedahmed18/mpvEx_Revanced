@@ -24,5 +24,6 @@ data class Video(
   val fps: Float,
   val resolution: String,
   val hasEmbeddedSubtitles: Boolean = false,
-  val subtitleCodec:  String = "",
+  val subtitleCodec: String = "",
+  val hasExternalSubtitles: Boolean = false,
 )

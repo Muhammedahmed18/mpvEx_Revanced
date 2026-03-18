@@ -18,8 +18,6 @@ class BrowserPreferences(
   val videoSortType = preferenceStore.getEnum("video_sort_type", VideoSortType.Title)
   val videoSortOrder = preferenceStore.getEnum("video_sort_order", SortOrder.Ascending)
 
-  val folderViewMode = preferenceStore.getEnum("folder_view_mode", FolderViewMode.AlbumView)
-
   private val isTablet = context.resources.configuration.smallestScreenWidthDp >= 600
   val folderGridColumnsPortrait = preferenceStore.getInt("folder_grid_columns_portrait", if (isTablet) 4 else 3)
   val folderGridColumnsLandscape = preferenceStore.getInt("folder_grid_columns_landscape", 5)
@@ -35,7 +33,6 @@ class BrowserPreferences(
   val showFramerateInResolution = preferenceStore.getBoolean("show_framerate_in_resolution", false)
   val showSubtitleIndicator = preferenceStore.getBoolean("show_subtitle_indicator", false)
   val showProgressBar = preferenceStore.getBoolean("show_progress_bar", true)
-  val mediaLayoutMode = preferenceStore.getEnum("media_layout_mode", MediaLayoutMode. LIST)
 
   // Visibility preferences for folder card chips
   val showTotalVideosChip = preferenceStore.getBoolean("show_total_videos_chip", true)
@@ -102,32 +99,4 @@ enum class VideoSortType {
         Date -> "Date"
         Size -> "Size"
       }
-}
-
-/**
- * Folder view mode options
- */
-enum class FolderViewMode {
-  AlbumView,
-  FileManager,
-  ;
-
-  val displayName: String
-    get() =
-      when (this) {
-        AlbumView -> "Folder View"
-        FileManager -> "Tree View"
-      }
-}
-
-enum class MediaLayoutMode {
-  LIST,
-  GRID,
-  ;
-
-  val displayName:  String
-    get() = when (this) {
-      LIST -> "List"
-      GRID -> "Grid"
-    }
 }

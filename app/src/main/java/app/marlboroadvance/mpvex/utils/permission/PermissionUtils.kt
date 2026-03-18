@@ -219,7 +219,7 @@ object PermissionUtils {
     /**
      * Check if MANAGE_EXTERNAL_STORAGE permission is available and granted
      */
-    private fun hasManageStoragePermission(): Boolean =
+    fun hasManageStoragePermission(): Boolean =
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
         android.os.Environment.isExternalStorageManager()
       } else {
@@ -235,7 +235,7 @@ object PermissionUtils {
     ): Pair<Int, Int> =
       withContext(Dispatchers.IO) {
         if (!BuildConfig.SCOPED_STORAGE_ONLY || hasManageStoragePermission()) {
-          deleteVideosDirectly(videos)
+          deleteVideosDirectly(context, videos)
         } else {
           deleteVideosScoped(context, videos)
         }
@@ -243,19 +243,35 @@ object PermissionUtils {
 
     /**
      * Delete videos using direct file operations (requires MANAGE_EXTERNAL_STORAGE on Android 11+)
+     * Syncs with MediaStore after deletion
      */
-    private suspend fun deleteVideosDirectly(videos: List<Video>): Pair<Int, Int> =
+    private suspend fun deleteVideosDirectly(context: Context, videos: List<Video>): Pair<Int, Int> =
       withContext(Dispatchers.IO) {
         var deleted = 0
         var failed = 0
+        val affectedFolders = mutableSetOf<String>()
 
         for (video in videos) {
           try {
             val file = File(video.path)
+            val parentPath = file.parent
             if (file.exists() && file.delete()) {
               deleted++
+              parentPath?.let { affectedFolders.add(it) }
               RecentlyPlayedOps.onVideoDeleted(video.path)
               PlaybackStateOps.onVideoDeleted(video.path)
+              
+              // Sync MediaStore
+              try {
+                context.contentResolver.delete(
+                  MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
+                  "${MediaStore.Video.Media.DATA} = ?",
+                  arrayOf(video.path)
+                )
+              } catch (e: Exception) {
+                Log.w(TAG, "MediaStore sync failed for ${video.path}", e)
+              }
+
               Log.d(TAG, "✓ Deleted: ${video.displayName}")
             } else {
               failed++
@@ -285,6 +301,7 @@ object PermissionUtils {
       withContext(Dispatchers.IO) {
         var deleted = 0
         var failed = 0
+        val affectedFolders = mutableSetOf<String>()
 
         val contentVideos = videos.filter { it.uri.scheme == "content" }
         val fileVideos = videos.filter { it.uri.scheme != "content" }
@@ -294,6 +311,8 @@ object PermissionUtils {
           if (granted) {
             contentVideos.forEach { video ->
               deleted++
+              val parentPath = File(video.path).parent
+              parentPath?.let { affectedFolders.add(it) }
               RecentlyPlayedOps.onVideoDeleted(video.path)
               PlaybackStateOps.onVideoDeleted(video.path)
               Log.d(TAG, "✓ Deleted (scoped request): ${video.displayName}")
@@ -308,6 +327,8 @@ object PermissionUtils {
               val rows = context.contentResolver.delete(video.uri, null, null)
               if (rows > 0) {
                 deleted++
+                val parentPath = File(video.path).parent
+                parentPath?.let { affectedFolders.add(it) }
                 RecentlyPlayedOps.onVideoDeleted(video.path)
                 PlaybackStateOps.onVideoDeleted(video.path)
                 Log.d(TAG, "✓ Deleted (scoped): ${video.displayName}")
@@ -325,8 +346,10 @@ object PermissionUtils {
         for (video in fileVideos) {
           try {
             val file = File(video.path)
+            val parentPath = file.parent
             if (!file.exists() || file.delete()) {
               deleted++
+              parentPath?.let { affectedFolders.add(it) }
               RecentlyPlayedOps.onVideoDeleted(video.path)
               PlaybackStateOps.onVideoDeleted(video.path)
               Log.d(TAG, "✓ Deleted (file fallback): ${video.displayName}")
@@ -452,6 +475,95 @@ object PermissionUtils {
         } catch (e: Exception) {
           Log.e(TAG, "✗ Error renaming (scoped) ${video.displayName}", e)
           Result.failure(e)
+        }
+      }
+
+    /**
+     * Delete folders using direct file operations (requires MANAGE_EXTERNAL_STORAGE on Android 11+)
+     */
+    suspend fun deleteFolders(
+      context: Context,
+      folderPaths: List<String>,
+    ): Pair<Int, Int> =
+      withContext(Dispatchers.IO) {
+        if (!BuildConfig.SCOPED_STORAGE_ONLY || hasManageStoragePermission()) {
+          var deleted = 0
+          var failed = 0
+          for (path in folderPaths) {
+            try {
+              val dir = File(path)
+              if (dir.exists() && dir.deleteRecursively()) {
+                deleted++
+                // Try to sync MediaStore by deleting all items in this folder
+                context.contentResolver.delete(
+                  MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
+                  "${MediaStore.Video.Media.DATA} LIKE ?",
+                  arrayOf("$path/%")
+                )
+                Log.d(TAG, "✓ Deleted folder: $path")
+              } else {
+                failed++
+                Log.w(TAG, "✗ Failed to delete folder: $path")
+              }
+            } catch (e: Exception) {
+              failed++
+              Log.e(TAG, "✗ Error deleting folder $path", e)
+            }
+          }
+          if (deleted > 0) {
+            MediaLibraryEvents.notifyChanged()
+          }
+          Pair(deleted, failed)
+        } else {
+          // Scoped storage folder deletion is complex and usually requires DocumentTree
+          // For now, return failure to avoid complexity, but we could implement it if needed.
+          Log.e(TAG, "Folder deletion not supported in Scoped Storage mode without MANAGE_EXTERNAL_STORAGE")
+          Pair(0, folderPaths.size)
+        }
+      }
+
+    /**
+     * Rename folder using direct file operations (requires MANAGE_EXTERNAL_STORAGE on Android 11+)
+     */
+    suspend fun renameFolder(
+      context: Context,
+      oldPath: String,
+      newName: String,
+    ): Result<Unit> =
+      withContext(Dispatchers.IO) {
+        if (!BuildConfig.SCOPED_STORAGE_ONLY || hasManageStoragePermission()) {
+          try {
+            val oldDir = File(oldPath)
+            val newDir = File(oldDir.parentFile, newName)
+            if (oldDir.exists() && oldDir.renameTo(newDir)) {
+              Log.d(TAG, "✓ Renamed folder: $oldPath -> ${newDir.absolutePath}")
+              
+              // We need to trigger a full scan or update MediaStore for all files in the folder
+              // A simple scan of the new directory is usually enough
+              try {
+                android.media.MediaScannerConnection.scanFile(
+                  context,
+                  arrayOf(newDir.absolutePath),
+                  null,
+                  null,
+                )
+              } catch (e: Exception) {
+                Log.w(TAG, "Media scan failed after folder rename: ${e.message}")
+              }
+
+              MediaLibraryEvents.notifyChanged()
+              Result.success(Unit)
+            } else {
+              Log.w(TAG, "✗ Folder rename failed: $oldPath")
+              Result.failure(IllegalStateException("Folder rename operation failed"))
+            }
+          } catch (e: Exception) {
+            Log.e(TAG, "✗ Error renaming folder $oldPath", e)
+            Result.failure(e)
+          }
+        } else {
+           Log.e(TAG, "Folder rename not supported in Scoped Storage mode without MANAGE_EXTERNAL_STORAGE")
+           Result.failure(IllegalStateException("Not supported in Scoped Storage"))
         }
       }
   }

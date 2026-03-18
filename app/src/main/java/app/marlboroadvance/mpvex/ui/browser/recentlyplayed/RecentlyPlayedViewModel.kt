@@ -14,12 +14,13 @@ import app.marlboroadvance.mpvex.database.repository.PlaylistRepository
 import app.marlboroadvance.mpvex.database.repository.VideoMetadataCacheRepository
 import app.marlboroadvance.mpvex.domain.media.model.Video
 import app.marlboroadvance.mpvex.domain.recentlyplayed.repository.RecentlyPlayedRepository
+import app.marlboroadvance.mpvex.preferences.BrowserPreferences
+import app.marlboroadvance.mpvex.utils.media.MetadataRetrieval
 import app.marlboroadvance.mpvex.utils.permission.PermissionUtils
-
-
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import org.koin.java.KoinJavaComponent.inject
 import java.io.File
@@ -29,6 +30,7 @@ class RecentlyPlayedViewModel(application: Application) : AndroidViewModel(appli
   private val recentlyPlayedRepository by inject<RecentlyPlayedRepository>(RecentlyPlayedRepository::class.java)
   private val playlistRepository by inject<PlaylistRepository>(PlaylistRepository::class.java)
   private val metadataCache by inject<VideoMetadataCacheRepository>(VideoMetadataCacheRepository::class.java)
+  private val browserPreferences by inject<BrowserPreferences>(BrowserPreferences::class.java)
 
   private val _recentItems = MutableStateFlow<List<RecentlyPlayedItem>>(emptyList())
   val recentItems: StateFlow<List<RecentlyPlayedItem>> = _recentItems.asStateFlow()
@@ -53,6 +55,41 @@ class RecentlyPlayedViewModel(application: Application) : AndroidViewModel(appli
         Pair(entities, playlists)
       }.collect { (entities, playlists) ->
         loadRecentVideosFromEntities(entities, playlists)
+      }
+    }
+
+    // Observe subtitle indicator preference changes
+    viewModelScope.launch {
+      browserPreferences.showSubtitleIndicator.changes().collectLatest { enabled ->
+        if (enabled) {
+          Log.d("RecentlyPlayedViewModel", "Subtitle indicator enabled, enriching recent videos")
+          val currentItems = _recentItems.value
+          val videoItems = currentItems.filterIsInstance<RecentlyPlayedItem.VideoItem>()
+          
+          if (videoItems.isNotEmpty()) {
+            val videos = videoItems.map { it.video }
+            val enrichedVideos = MetadataRetrieval.enrichVideosIfNeeded(
+              context = getApplication(),
+              videos = videos,
+              browserPreferences = browserPreferences,
+              metadataCache = metadataCache
+            )
+            
+            if (enrichedVideos != videos) {
+              val enrichedVideoMap = enrichedVideos.associateBy { it.id }
+              val enrichedItems = currentItems.map { item ->
+                when (item) {
+                  is RecentlyPlayedItem.VideoItem -> {
+                    enrichedVideoMap[item.video.id]?.let { item.copy(video = it) } ?: item
+                  }
+                  else -> item
+                }
+              }
+              _recentItems.value = enrichedItems
+              _recentVideos.value = enrichedItems.filterIsInstance<RecentlyPlayedItem.VideoItem>().map { it.video }
+            }
+          }
+        }
       }
     }
   }
@@ -149,10 +186,34 @@ class RecentlyPlayedViewModel(application: Application) : AndroidViewModel(appli
 
       // Sort by timestamp
       val sortedItems = items.sortedByDescending { it.timestamp }
-      _recentItems.value = sortedItems
+      
+      // Enrich videos if metadata is needed
+      val finalItems = if (sortedItems.isNotEmpty() && MetadataRetrieval.isVideoMetadataNeeded(browserPreferences)) {
+          val videoItems = sortedItems.filterIsInstance<RecentlyPlayedItem.VideoItem>()
+          val videos = videoItems.map { it.video }
+          val enrichedVideos = MetadataRetrieval.enrichVideosIfNeeded(
+              context = getApplication(),
+              videos = videos,
+              browserPreferences = browserPreferences,
+              metadataCache = metadataCache
+          )
+          val enrichedVideoMap = enrichedVideos.associateBy { it.id }
+          sortedItems.map { item ->
+              when (item) {
+                  is RecentlyPlayedItem.VideoItem -> {
+                      enrichedVideoMap[item.video.id]?.let { item.copy(video = it) } ?: item
+                  }
+                  else -> item
+              }
+          }
+      } else {
+          sortedItems
+      }
+
+      _recentItems.value = finalItems
 
       // Keep backward compatibility
-      val videos = sortedItems.filterIsInstance<RecentlyPlayedItem.VideoItem>().map { it.video }
+      val videos = finalItems.filterIsInstance<RecentlyPlayedItem.VideoItem>().map { it.video }
       _recentVideos.value = videos
     } catch (e: Exception) {
       Log.e("RecentlyPlayedViewModel", "Error loading recent videos", e)
@@ -230,6 +291,8 @@ class RecentlyPlayedViewModel(application: Application) : AndroidViewModel(appli
         height = height,
         fps = fps,
         resolution = formatResolution(width, height),
+        hasEmbeddedSubtitles = metadata?.hasEmbeddedSubtitles ?: false,
+        subtitleCodec = metadata?.subtitleCodec ?: ""
       )
     } catch (e: Exception) {
       Log.e("RecentlyPlayedViewModel", "Error creating video from path: $filePath", e)

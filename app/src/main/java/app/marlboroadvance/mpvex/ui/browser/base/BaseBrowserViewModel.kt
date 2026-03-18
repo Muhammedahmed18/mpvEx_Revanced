@@ -5,6 +5,8 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import app.marlboroadvance.mpvex.database.repository.VideoMetadataCacheRepository
 import app.marlboroadvance.mpvex.domain.media.model.Video
+import app.marlboroadvance.mpvex.domain.thumbnail.ThumbnailRepository
+import app.marlboroadvance.mpvex.repository.MediaFileRepository
 import app.marlboroadvance.mpvex.utils.history.RecentlyPlayedOps
 import app.marlboroadvance.mpvex.utils.permission.PermissionUtils.StorageOps
 import kotlinx.coroutines.flow.SharingStarted
@@ -21,6 +23,8 @@ abstract class BaseBrowserViewModel(
 ) : AndroidViewModel(application),
   KoinComponent {
   protected val metadataCache: VideoMetadataCacheRepository by inject()
+  protected val thumbnailRepository: ThumbnailRepository by inject()
+
   /**
    * Observable recently played file path for highlighting
    * Automatically filters out non-existent files
@@ -36,19 +40,28 @@ abstract class BaseBrowserViewModel(
   abstract fun refresh()
 
   /**
-   * Delete videos from storage
-   * Automatically removes from recently played history and invalidates cache
+   * Delete videos from storage using reactive repository
+   * Automatically updates global state, removes from recently played history, and invalidates cache
    *
    * @return Pair of (deletedCount, failedCount)
    */
   open suspend fun deleteVideos(videos: List<Video>): Pair<Int, Int> {
-    val result = StorageOps.deleteVideos(getApplication(), videos)
+    var deletedCount = 0
+    var failureCount = 0
 
-    // Invalidate cache for deleted videos
-    val paths = videos.map { it.path }
-    metadataCache.invalidateVideos(paths)
+    videos.forEach { video ->
+      val success = MediaFileRepository.deleteVideo(getApplication(), video)
+      if (success) {
+        deletedCount++
+        // Invalidate cache for deleted video
+        metadataCache.invalidateVideo(video.path)
+        thumbnailRepository.invalidateVideo(video)
+      } else {
+        failureCount++
+      }
+    }
 
-    return result
+    return Pair(deletedCount, failureCount)
   }
 
   /**
@@ -69,6 +82,7 @@ abstract class BaseBrowserViewModel(
     // Invalidate cache for old path (new path will be re-cached on next access)
     result.onSuccess {
       metadataCache.invalidateVideo(oldPath)
+      thumbnailRepository.invalidateVideo(video)
     }
 
     return result

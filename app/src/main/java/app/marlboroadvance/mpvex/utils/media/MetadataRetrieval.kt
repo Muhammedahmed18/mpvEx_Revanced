@@ -70,16 +70,19 @@ object MetadataRetrieval {
             return@withContext video
         }
 
-        // If video already has metadata (including FPS and subtitle info), return as-is
+        // Check for external subtitles even if internal metadata is already present
+        val hasExtSubs = checkExternalSubtitles(video.path)
+
+        // If video already has metadata (including FPS and subtitle info), just update external sub status
         if (video.width > 0 && video.height > 0 && video.duration > 0 && video.fps > 0f && video.subtitleCodec.isNotEmpty()) {
-            return@withContext video
+            return@withContext video.copy(hasExternalSubtitles = hasExtSubs)
         }
 
         // Extract metadata
         try {
             val file = File(video.path)
             if (!file.exists()) {
-                return@withContext video
+                return@withContext video.copy(hasExternalSubtitles = hasExtSubs)
             }
 
             val metadata = metadataCache.getOrExtractMetadata(file, video.uri, video.displayName)
@@ -92,14 +95,15 @@ object MetadataRetrieval {
                     fps = metadata.fps,
                     resolution = formatResolutionWithFps(metadata.width, metadata.height, metadata.fps),
                     hasEmbeddedSubtitles = metadata.hasEmbeddedSubtitles,
-                    subtitleCodec = metadata.subtitleCodec
+                    subtitleCodec = metadata.subtitleCodec,
+                    hasExternalSubtitles = hasExtSubs
                 )
             } else {
-                video
+                video.copy(hasExternalSubtitles = hasExtSubs)
             }
         } catch (e: Exception) {
             Log.e(TAG, "Error enriching video metadata: ${video.displayName}", e)
-            video
+            video.copy(hasExternalSubtitles = hasExtSubs)
         }
     }
 
@@ -126,13 +130,7 @@ object MetadataRetrieval {
             video.fps == 0f || video.subtitleCodec.isEmpty()
         }
 
-        if (videosNeedingMetadata.isEmpty()) {
-            return@withContext videos
-        }
-
-        Log.d(TAG, "Enriching ${videosNeedingMetadata.size} videos with metadata")
-
-        // Prepare batch extraction
+        // Prepare batch extraction for metadata
         val fileTriples = videosNeedingMetadata.mapNotNull { video ->
             val file = File(video.path)
             if (file.exists()) {
@@ -145,9 +143,11 @@ object MetadataRetrieval {
         // Batch extract metadata
         val metadataMap = metadataCache.getOrExtractMetadataBatch(fileTriples)
 
-        // Update videos with metadata
+        // Update videos with metadata and external subtitle info
         videos.map { video ->
+            val hasExtSubs = checkExternalSubtitles(video.path)
             val metadata = metadataMap[video.path]
+            
             if (metadata != null) {
                 video.copy(
                     duration = metadata.durationMs,
@@ -157,10 +157,11 @@ object MetadataRetrieval {
                     fps = metadata.fps,
                     resolution = formatResolutionWithFps(metadata.width, metadata.height, metadata.fps),
                     hasEmbeddedSubtitles = metadata.hasEmbeddedSubtitles,
-                    subtitleCodec = metadata.subtitleCodec
+                    subtitleCodec = metadata.subtitleCodec,
+                    hasExternalSubtitles = hasExtSubs
                 )
             } else {
-                video
+                video.copy(hasExternalSubtitles = hasExtSubs)
             }
         }
     }
@@ -183,10 +184,12 @@ object MetadataRetrieval {
 
         // Process each video
         for (video in videos) {
+            val hasExtSubs = checkExternalSubtitles(video.path)
+            
             // If video already has metadata (including FPS and subtitle info), emit as-is
             if (video.width > 0 && video.height > 0 && video.duration > 0 && 
                 video.fps > 0f && video.subtitleCodec.isNotEmpty()) {
-                emit(video)
+                emit(video.copy(hasExternalSubtitles = hasExtSubs))
                 continue
             }
 
@@ -194,7 +197,7 @@ object MetadataRetrieval {
             try {
                 val file = File(video.path)
                 if (!file.exists()) {
-                    emit(video)
+                    emit(video.copy(hasExternalSubtitles = hasExtSubs))
                     continue
                 }
 
@@ -209,16 +212,39 @@ object MetadataRetrieval {
                             fps = metadata.fps,
                             resolution = formatResolutionWithFps(metadata.width, metadata.height, metadata.fps),
                             hasEmbeddedSubtitles = metadata.hasEmbeddedSubtitles,
-                            subtitleCodec = metadata.subtitleCodec
+                            subtitleCodec = metadata.subtitleCodec,
+                            hasExternalSubtitles = hasExtSubs
                         )
                     )
                 } else {
-                    emit(video)
+                    emit(video.copy(hasExternalSubtitles = hasExtSubs))
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Error enriching video metadata: ${video.displayName}", e)
-                emit(video)
+                emit(video.copy(hasExternalSubtitles = hasExtSubs))
             }
+        }
+    }
+
+    /**
+     * Checks if external subtitles exist for a video file
+     */
+    private fun checkExternalSubtitles(videoPath: String): Boolean {
+        try {
+            val videoFile = File(videoPath)
+            val parentDir = videoFile.parentFile ?: return false
+            val baseName = videoFile.nameWithoutExtension.lowercase()
+            
+            val extensions = setOf("srt", "ass", "ssa", "vtt", "sub", "idx")
+            
+            val files = parentDir.listFiles() ?: return false
+            return files.any { file ->
+                file.isFile && 
+                file.extension.lowercase() in extensions && 
+                file.nameWithoutExtension.lowercase().startsWith(baseName)
+            }
+        } catch (e: Exception) {
+            return false
         }
     }
 

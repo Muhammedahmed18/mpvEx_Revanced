@@ -1,21 +1,34 @@
 package app.marlboroadvance.mpvex.repository
 
 import android.content.Context
+import android.database.ContentObserver
 import android.net.Uri
 import android.os.Environment
+import android.os.Handler
+import android.os.Looper
 import android.provider.MediaStore
 import android.util.Log
 import app.marlboroadvance.mpvex.domain.browser.FileSystemItem
 import app.marlboroadvance.mpvex.domain.browser.PathComponent
 import app.marlboroadvance.mpvex.domain.media.model.Video
 import app.marlboroadvance.mpvex.domain.media.model.VideoFolder
+import app.marlboroadvance.mpvex.utils.media.MediaInfoOps
+import app.marlboroadvance.mpvex.utils.media.MediaLibraryEvents
+import app.marlboroadvance.mpvex.utils.storage.FileTypeUtils
 import app.marlboroadvance.mpvex.utils.storage.FolderViewScanner
+import app.marlboroadvance.mpvex.utils.storage.StorageVolumeUtils
 import app.marlboroadvance.mpvex.utils.storage.TreeViewScanner
 import app.marlboroadvance.mpvex.utils.storage.VideoScanUtils
-import app.marlboroadvance.mpvex.utils.storage.StorageVolumeUtils
-import app.marlboroadvance.mpvex.utils.storage.FileTypeUtils
-import app.marlboroadvance.mpvex.utils.media.MediaInfoOps
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.Locale
@@ -37,6 +50,58 @@ import kotlin.math.pow
 object MediaFileRepository {
   private const val TAG = "MediaFileRepository"
 
+  private val repositoryScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+  private var contentObserver: ContentObserver? = null
+  private var refreshJob: Job? = null
+
+  // Master list of all videos on the device - RECURSIVE SOURCE OF TRUTH
+  private val _allVideos = MutableStateFlow<List<Video>>(emptyList())
+  val allVideos: StateFlow<List<Video>> = _allVideos.asStateFlow()
+
+  /**
+   * Starts watching for MediaStore changes.
+   * This allows the app to automatically detect new or deleted videos.
+   */
+  fun startWatching(context: Context) {
+    if (contentObserver != null) return
+
+    val handler = Handler(Looper.getMainLooper())
+    contentObserver = object : ContentObserver(handler) {
+      override fun onChange(selfChange: Boolean, uri: Uri?) {
+        super.onChange(selfChange, uri)
+        Log.d(TAG, "MediaStore change detected: $uri")
+        
+        // Debounce refresh to avoid multiple scans during batch operations
+        refreshJob?.cancel()
+        refreshJob = repositoryScope.launch {
+          delay(2000) // 2 second debounce
+          refreshAllVideos(context)
+          // Notify that library changed so folder views can refresh their caches
+          MediaLibraryEvents.notifyChanged()
+        }
+      }
+    }
+
+    context.contentResolver.registerContentObserver(
+      MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
+      true,
+      contentObserver!!
+    )
+    Log.d(TAG, "MediaStore observer registered")
+  }
+
+  /**
+   * Stops watching for MediaStore changes.
+   */
+  fun stopWatching(context: Context) {
+    contentObserver?.let {
+      context.contentResolver.unregisterContentObserver(it)
+      contentObserver = null
+      Log.d(TAG, "MediaStore observer unregistered")
+    }
+    refreshJob?.cancel()
+  }
+
   /**
    * Clears all caches
    * Call this when media library changes are detected or when forcing a hard refresh
@@ -45,6 +110,83 @@ object MediaFileRepository {
     Log.d(TAG, "Clearing all caches (FolderViewScanner + TreeViewScanner)")
     FolderViewScanner.clearCache()
     TreeViewScanner.clearCache()
+  }
+
+  /**
+   * Refreshes the master list of videos from storage.
+   * This should be called when the app starts or when a manual refresh is requested.
+   */
+  suspend fun refreshAllVideos(context: Context) = withContext(Dispatchers.IO) {
+    try {
+      // Clear scanner caches before refreshing to ensure fresh data
+      clearCache()
+
+      val folders = getAllVideoFolders(context)
+      val allVids = mutableListOf<Video>()
+      folders.forEach { folder ->
+        allVids.addAll(getVideosInFolder(context, folder.bucketId))
+      }
+      _allVideos.value = allVids.sortedBy { it.displayName.lowercase(Locale.getDefault()) }
+      Log.d(TAG, "Refreshed master list: ${_allVideos.value.size} videos found")
+    } catch (e: Exception) {
+      Log.e(TAG, "Error refreshing all videos", e)
+    }
+  }
+
+  /**
+   * Deletes a video file reactively.
+   * Updates the in-memory state immediately so UI reacts without waiting for MediaStore.
+   */
+  suspend fun deleteVideo(context: Context, video: Video): Boolean = withContext(Dispatchers.IO) {
+    try {
+      // 1. Delete from MediaStore/Filesystem
+      val deleted = try {
+        val file = File(video.path)
+        if (file.exists()) {
+            val res = context.contentResolver.delete(video.uri, null, null)
+            if (res <= 0) {
+                // Fallback if contentResolver delete fails (e.g. for files not in MediaStore)
+                file.delete()
+            } else true
+        } else true
+      } catch (e: Exception) {
+        Log.e(TAG, "Failed to delete file from storage", e)
+        false
+      }
+
+      if (deleted) {
+        // 2. Immediate update of local state (Source of Truth)
+        _allVideos.update { currentList ->
+          currentList.filter { it.id != video.id && it.path != video.path }
+        }
+        
+        // 3. Notify global events and trigger background scan
+        MediaLibraryEvents.notifyChanged()
+        triggerMediaScan(context, video.path)
+        
+        Log.d(TAG, "Successfully deleted video and updated local state: ${video.displayName}")
+        true
+      } else {
+        false
+      }
+    } catch (e: Exception) {
+      Log.e(TAG, "Error in deleteVideo", e)
+      false
+    }
+  }
+
+  private fun triggerMediaScan(context: Context, path: String) {
+    try {
+      android.media.MediaScannerConnection.scanFile(
+        context,
+        arrayOf(path),
+        null
+      ) { p, uri ->
+        Log.d(TAG, "Background media scan finished for deleted file: $p")
+      }
+    } catch (e: Exception) {
+        Log.e(TAG, "Failed to trigger background scan", e)
+    }
   }
 
   // =============================================================================
@@ -408,7 +550,7 @@ object MediaFileRepository {
               roots.add(
                 FileSystemItem.Folder(
                   name = volumeName,
-                  path = volumeDir.absolutePath,
+                  path = volumePath,
                   lastModified = volumeDir.lastModified(),
                   videoCount = folderData?.videoCount ?: 0,
                   totalSize = folderData?.totalSize ?: 0L,
